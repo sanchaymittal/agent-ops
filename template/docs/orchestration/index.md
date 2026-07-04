@@ -6,7 +6,18 @@ Read when: dispatching, supervising, or executing work as coordinator or worker.
 
 - **Coordinator** (the interactive session): plans, dispatches, verifies, commits, updates Linear. Does not implement worker tasks itself.
 - **Workers**: project-scoped roles (roster in `AGENTS.md`), spawned yolo/non-interactive, one per worktree. **Workers never commit.**
-- Planning/decision reviews → Claude Code model `fable` first. Engineering → codex/agy with project roles.
+
+## Model allocation
+
+| Slot | Model | Notes |
+| --- | --- | --- |
+| Coordinator | GPT-5.5 (Hermes) | Runs the checklist below; **must have Linear MCP** — else Linear updates fall to a Claude session |
+| Planning / decision review | Claude `fable` | Architecture, gates, tie-breaks — not misc work |
+| Implementation | agy (Antigravity) | Default coder, with project roles |
+| Review | codex | `engineering-code-reviewer` role |
+| Misc / cheap | agy / codex / free models | Never `fable` |
+
+Cross-model review rule: the model that authored a change never reviews it (agy writes → codex reviews; codex writes → agy or `fable` reviews).
 
 ## Dispatch checklist (every task)
 

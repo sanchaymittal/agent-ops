@@ -27,7 +27,8 @@ Backlog lives in Linear: team `{{LINEAR_TEAM}}`, project `{{LINEAR_PROJECT}}`, i
 
 - The coordinator plans, dispatches, verifies, commits, and updates Linear. Workers implement. **Workers never commit.**
 - Dispatch = Linear issue → prompt file → worker → report file → verify → commit. Checklist: `docs/orchestration/index.md`. Orca substrate + stability rules: `docs/orchestration/orca.md`.
-- Planning and decision reviews go to Claude Code model `fable` first. Engineering goes to codex/agy with project roles.
+- Model allocation: coordinator = GPT-5.5/Hermes (must have Linear MCP); planning + decision reviews = Claude `fable` first; implementation = agy; review = codex; misc/cheap work = agy/codex/free models — never `fable`.
+- Cross-model review: the model that authored a change never reviews it.
 - Every commit and report names the exact role used: `<role>: <summary> ({{ISSUE_PREFIX}}-xx)`.
 
 ## Roster (project-scoped roles)
