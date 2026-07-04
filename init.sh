@@ -3,15 +3,33 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 TARGET_DIR PROJECT_NAME LINEAR_TEAM LINEAR_PROJECT ISSUE_PREFIX [VERIFY_CMD]" >&2
-  echo "example: $0 ~/github/example-app example-app eng example-app EX 'npm run verify'" >&2
+  echo "usage: $0 TARGET_DIR PROJECT_NAME ISSUE_PREFIX [VERIFY_CMD]" >&2
+  echo "example: $0 ~/github/example-app example-app EX 'npm run verify'" >&2
+  echo "linear: LINEAR_TEAM=eng LINEAR_PROJECT=example-app $0 ~/github/example-app example-app EX 'npm run verify'" >&2
   exit 1
 }
 
-[ $# -ge 5 ] || usage
+[ $# -ge 3 ] && [ $# -le 4 ] || usage
 TARGET=$1
-T_PREFIX_LOWER=$(printf '%s' "$5" | tr '[:upper:]' '[:lower:]')
-export T_NAME=$2 T_TEAM=$3 T_PROJECT=$4 T_PREFIX=$5 T_PREFIX_LOWER T_VERIFY=${6:-npm run verify}
+T_PREFIX=$3
+T_PREFIX_LOWER=$(printf '%s' "$T_PREFIX" | tr '[:upper:]' '[:lower:]')
+T_VERIFY=${4:-npm run verify}
+
+if [ -n "${LINEAR_TEAM:-}" ] || [ -n "${LINEAR_PROJECT:-}" ]; then
+  if [ -z "${LINEAR_TEAM:-}" ] || [ -z "${LINEAR_PROJECT:-}" ]; then
+    echo "refusing: set both LINEAR_TEAM and LINEAR_PROJECT, or neither" >&2
+    exit 1
+  fi
+  T_TRACKER_NAME="Linear"
+  T_TRACKER_DETAILS="Linear team \`$LINEAR_TEAM\`, project \`$LINEAR_PROJECT\`, issues \`$T_PREFIX-xx\`"
+  T_TRACKER_UPDATE="update Linear"
+else
+  T_TRACKER_NAME="project issue tracker"
+  T_TRACKER_DETAILS="issues \`$T_PREFIX-xx\` in the project's chosen tracker"
+  T_TRACKER_UPDATE="update the issue tracker"
+fi
+
+export T_NAME=$2 T_PREFIX T_PREFIX_LOWER T_VERIFY T_TRACKER_NAME T_TRACKER_DETAILS T_TRACKER_UPDATE
 SRC="$(cd "$(dirname "$0")/template" && pwd)"
 
 mkdir -p "$TARGET"
@@ -48,8 +66,9 @@ tar -C "$SRC" --exclude='.DS_Store' -cf - . | tar -C "$TARGET" -xf -
 find "$TARGET/docs" "$TARGET/.orchestration" "$TARGET/AGENTS.md" -type f -name '*.md' -print0 |
   xargs -0 perl -pi -e '
     s/\{\{PROJECT_NAME\}\}/$ENV{T_NAME}/g;
-    s/\{\{LINEAR_TEAM\}\}/$ENV{T_TEAM}/g;
-    s/\{\{LINEAR_PROJECT\}\}/$ENV{T_PROJECT}/g;
+    s/\{\{TASK_TRACKER_NAME\}\}/$ENV{T_TRACKER_NAME}/g;
+    s/\{\{TASK_TRACKER_DETAILS\}\}/$ENV{T_TRACKER_DETAILS}/g;
+    s/\{\{TASK_TRACKER_UPDATE\}\}/$ENV{T_TRACKER_UPDATE}/g;
     s/\{\{ISSUE_PREFIX\}\}/$ENV{T_PREFIX}/g;
     s/\{\{ISSUE_PREFIX_LOWER\}\}/$ENV{T_PREFIX_LOWER}/g;
     s/\{\{VERIFY_CMD\}\}/$ENV{T_VERIFY}/g;
@@ -63,4 +82,4 @@ echo "  1. AGENTS.md — fill both TODO(project) blocks (description, layout tab
 echo "  2. create or refresh README.md if the target repo does not already have one"
 echo "  3. docs/gates/index.md — one row per human-provisioned dependency"
 echo "  4. ensure '$T_VERIFY' exists and is green"
-echo "  5. commit; create Linear team '$T_TEAM' / project '$T_PROJECT' if missing"
+echo "  5. commit; configure '$T_TRACKER_NAME' if the repo needs an external backlog"

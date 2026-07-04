@@ -1,10 +1,8 @@
-# Linear task rules
+# Linear adapter rules
 
-Read when: creating, dispatching, blocking, or closing work items.
+Read when: the configured tracker is Linear. Skip this file for GitHub Issues, Jira, local task lists, or another tracker.
 
-- Backlog lives in Linear: team `{{LINEAR_TEAM}}`, project `{{LINEAR_PROJECT}}`, issues `{{ISSUE_PREFIX}}-xx`.
-- **No work without an issue.** Create one before dispatching anything, including meta/process work.
+- Backlog lives in {{TASK_TRACKER_DETAILS}}.
+- Generic tracker rules live in [`tasks.md`](./tasks.md); this file only adds Linear-specific conventions.
 - Branch names: use Linear's `gitBranchName` when branching.
-- Status flow: `Todo` → `In Progress` (on dispatch) → `In Review` (report landed, awaiting verify) → `Done` (verified + committed). Blocked work: comment on the issue linking the gate row in `docs/gates/index.md`; do not start it.
-- The coordinator updates Linear — workers have no MCP access. On completion, post the prompt + report paths as an issue comment.
-- Commits reference the issue: `<role>: <summary> ({{ISSUE_PREFIX}}-xx)`.
+- If the coordinator lacks Linear MCP access, it must hand Linear updates to a session that has access.

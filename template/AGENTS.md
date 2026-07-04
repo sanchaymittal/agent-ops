@@ -19,15 +19,15 @@ TODO(project): 2–3 lines — what this product is. When scope exists, freeze i
 - Never commit secrets or private user data. `{{VERIFY_CMD}}` is the definition of done for any code change.
 - Smallest verifiable change, with tests or smoke checks. Report exact files changed and commands run.
 
-## Task management — Linear
+## Task management
 
-Backlog lives in Linear: team `{{LINEAR_TEAM}}`, project `{{LINEAR_PROJECT}}`, issues `{{ISSUE_PREFIX}}-xx`. **No work without an issue.** Rules: `docs/orchestration/linear.md`.
+Backlog lives in {{TASK_TRACKER_DETAILS}}. **No work without a tracked issue/task.** Rules: `docs/orchestration/tasks.md`. Linear-specific rules are optional: `docs/orchestration/linear.md`.
 
 ## Orchestration — coordinator/worker
 
-- The coordinator plans, dispatches, verifies, commits, and updates Linear. Workers implement. **Workers never commit.**
-- Dispatch = Linear issue → prompt file → worker → report file → verify → commit. Checklist: `docs/orchestration/index.md`. Orca substrate + stability rules: `docs/orchestration/orca.md`.
-- Model allocation: coordinator = codex (must have Linear MCP); planning + decision reviews = Claude `fable` first; implementation = agy; review = codex; misc/cheap work = agy/codex/free models — never `fable`.
+- The coordinator plans, dispatches, verifies, commits, and updates the configured tracker. Workers implement. **Workers never commit.**
+- Dispatch = tracked issue/task → prompt file → worker → report file → verify → commit. Checklist: `docs/orchestration/index.md`. Orca substrate + stability rules: `docs/orchestration/orca.md`.
+- Model allocation: coordinator = codex (must have tracker access when an external tracker is configured); planning + decision reviews = Claude `fable` first; implementation = agy; review = codex; misc/cheap work = agy/codex/free models — never `fable`.
 - Cross-model review: the model that authored a change never reviews it.
 - Every commit and report names the exact role used: `<role>: <summary> ({{ISSUE_PREFIX}}-xx)`.
 
