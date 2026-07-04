@@ -4,23 +4,38 @@ set -euo pipefail
 
 usage() {
   echo "usage: $0 TARGET_DIR PROJECT_NAME LINEAR_TEAM LINEAR_PROJECT ISSUE_PREFIX [VERIFY_CMD]" >&2
-  echo "example: $0 ~/github/myapp myapp sanchay myapp MYA 'npm run verify'" >&2
+  echo "example: $0 ~/github/example-app example-app eng example-app EX 'npm run verify'" >&2
   exit 1
 }
 
 [ $# -ge 5 ] || usage
 TARGET=$1
-export T_NAME=$2 T_TEAM=$3 T_PROJECT=$4 T_PREFIX=$5 T_VERIFY=${6:-npm run verify}
+T_PREFIX_LOWER=$(printf '%s' "$5" | tr '[:upper:]' '[:lower:]')
+export T_NAME=$2 T_TEAM=$3 T_PROJECT=$4 T_PREFIX=$5 T_PREFIX_LOWER T_VERIFY=${6:-npm run verify}
 SRC="$(cd "$(dirname "$0")/template" && pwd)"
 
-if [ -e "$TARGET/AGENTS.md" ]; then
-  echo "refusing: $TARGET/AGENTS.md already exists" >&2
-  exit 1
-fi
 mkdir -p "$TARGET"
 
-# copy payload (dotdirs included); never clobbers files outside the payload
-tar -C "$SRC" -cf - . | tar -C "$TARGET" -xf -
+conflicts=()
+while IFS= read -r -d '' rel; do
+  rel=${rel#./}
+  if [ -e "$TARGET/$rel" ] || [ -L "$TARGET/$rel" ]; then
+    conflicts+=("$rel")
+  fi
+done < <(cd "$SRC" && find . -name .DS_Store -prune -o -type f -print0)
+
+if [ -e "$TARGET/CLAUDE.md" ] || [ -L "$TARGET/CLAUDE.md" ]; then
+  conflicts+=("CLAUDE.md")
+fi
+
+if [ ${#conflicts[@]} -gt 0 ]; then
+  echo "refusing: target already has managed path(s)" >&2
+  printf '  %s\n' "${conflicts[@]}" >&2
+  exit 1
+fi
+
+# copy payload (dotdirs included); managed-file conflicts were checked above
+tar -C "$SRC" --exclude='.DS_Store' -cf - . | tar -C "$TARGET" -xf -
 
 # substitute placeholders in payload markdown (perl for BSD/GNU portability)
 find "$TARGET/docs" "$TARGET/.orchestration" "$TARGET/AGENTS.md" -type f -name '*.md' -print0 |
@@ -29,6 +44,7 @@ find "$TARGET/docs" "$TARGET/.orchestration" "$TARGET/AGENTS.md" -type f -name '
     s/\{\{LINEAR_TEAM\}\}/$ENV{T_TEAM}/g;
     s/\{\{LINEAR_PROJECT\}\}/$ENV{T_PROJECT}/g;
     s/\{\{ISSUE_PREFIX\}\}/$ENV{T_PREFIX}/g;
+    s/\{\{ISSUE_PREFIX_LOWER\}\}/$ENV{T_PREFIX_LOWER}/g;
     s/\{\{VERIFY_CMD\}\}/$ENV{T_VERIFY}/g;
   '
 

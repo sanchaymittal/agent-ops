@@ -1,15 +1,15 @@
-# agent-ops-template
+# agent-ops
 
-Operating system for multi-agent repos, extracted from munshi (SAN-30/SAN-31): one thin `AGENTS.md` contract, CAG-style docs indexes, Linear-first task management, prompt→report dispatch protocol, and a 9-role roster for four CLIs (Claude Code, Codex, agy/Antigravity, OpenCode).
+Operating system for multi-agent repos: one thin `AGENTS.md` contract, CAG-style docs indexes, Linear-first task management, prompt-to-report dispatch protocol, and a 9-role roster for four CLIs (Claude Code, Codex, agy/Antigravity, OpenCode).
 
 ## Apply to a repo
 
 ```sh
 ./init.sh TARGET_DIR PROJECT_NAME LINEAR_TEAM LINEAR_PROJECT ISSUE_PREFIX [VERIFY_CMD]
-./init.sh ~/github/myapp myapp sanchay myapp MYA "npm run verify"
+./init.sh ~/github/example-app example-app eng example-app EX "npm run verify"
 ```
 
-Works on new and existing repos. Refuses to run if `TARGET_DIR/AGENTS.md` exists. Ships only `AGENTS.md`, `docs/`, `.orchestration/`, and `*/agents/` role files — existing settings (`.claude/settings.json` etc.) are untouched.
+Works on new and existing repos. Refuses to overwrite any managed file that already exists in `TARGET_DIR`. Ships only `AGENTS.md`, `CLAUDE.md`, `docs/`, `.orchestration/`, and `*/agents/` role files; existing settings (`.claude/settings.json` etc.) are untouched.
 
 Then, in the target repo:
 
