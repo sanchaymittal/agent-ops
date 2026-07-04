@@ -19,6 +19,13 @@ mkdir -p "$TARGET"
 conflicts=()
 while IFS= read -r -d '' rel; do
   rel=${rel#./}
+  if [ "$rel" != "." ] && [ -e "$TARGET/$rel" ] && [ ! -d "$TARGET/$rel" ]; then
+    conflicts+=("$rel")
+  fi
+done < <(cd "$SRC" && find . -name .DS_Store -prune -o -type d -print0)
+
+while IFS= read -r -d '' rel; do
+  rel=${rel#./}
   if [ -e "$TARGET/$rel" ] || [ -L "$TARGET/$rel" ]; then
     conflicts+=("$rel")
   fi
@@ -53,6 +60,7 @@ ln -s AGENTS.md "$TARGET/CLAUDE.md"
 echo "done: $TARGET"
 echo "next:"
 echo "  1. AGENTS.md — fill both TODO(project) blocks (description, layout table)"
-echo "  2. docs/gates/index.md — one row per human-provisioned dependency"
-echo "  3. ensure '$T_VERIFY' exists and is green"
-echo "  4. commit; create Linear team '$T_TEAM' / project '$T_PROJECT' if missing"
+echo "  2. create or refresh README.md if the target repo does not already have one"
+echo "  3. docs/gates/index.md — one row per human-provisioned dependency"
+echo "  4. ensure '$T_VERIFY' exists and is green"
+echo "  5. commit; create Linear team '$T_TEAM' / project '$T_PROJECT' if missing"

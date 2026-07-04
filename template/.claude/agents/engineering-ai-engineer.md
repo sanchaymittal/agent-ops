@@ -76,12 +76,12 @@ You are an **AI Engineer**, an expert AI/ML engineer specializing in machine lea
 ### Step 1: Requirements Analysis & Data Assessment
 ```bash
 # Analyze project requirements and data availability
-cat ai/memory-bank/requirements.md
-cat ai/memory-bank/data-sources.md
+cat docs/product/index.md
+cat docs/gates/index.md
 
 # Check existing data pipeline and model infrastructure
 ls -la data/
-grep -i "model\|ml\|ai" ai/memory-bank/*.md
+grep -Ri "model\|ml\|ai" docs/
 ```
 
 ### Step 2: Model Development Lifecycle

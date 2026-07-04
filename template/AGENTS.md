@@ -1,6 +1,6 @@
 # {{PROJECT_NAME}} — Agent Operating Contract
 
-Every agent (Claude Code, Codex, agy/Antigravity, OpenCode) working in this repo follows this file. `CLAUDE.md` symlinks here so all four CLIs read one contract. Humans start at `README.md`.
+Every agent (Claude Code, Codex, agy/Antigravity, OpenCode) working in this repo follows this file. `CLAUDE.md` symlinks here so all four CLIs read one contract. Humans start at `README.md` when present; otherwise start here until the project README exists.
 
 ## What this repo is
 

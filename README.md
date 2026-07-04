@@ -14,9 +14,10 @@ Works on new and existing repos. Refuses to overwrite any managed file that alre
 Then, in the target repo:
 
 1. `AGENTS.md` — fill both `TODO(project)` blocks (project description, layout table).
-2. `docs/gates/index.md` — one row per human-provisioned dependency (infra, credentials, external data, owner decisions).
-3. Ensure the verify command exists and is green; it is the definition of done.
-4. Commit. Create the Linear team/project if it doesn't exist.
+2. Create or refresh `README.md` if the target repo does not already have one.
+3. `docs/gates/index.md` — one row per human-provisioned dependency (infra, credentials, external data, owner decisions).
+4. Ensure the verify command exists and is green; it is the definition of done.
+5. Commit. Create the Linear team/project if it doesn't exist.
 
 ## What you get
 
