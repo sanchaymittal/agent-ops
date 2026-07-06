@@ -19,6 +19,17 @@ TODO(project): 2–3 lines — what this product is. When scope exists, freeze i
 - Never commit secrets or private user data. `{{VERIFY_CMD}}` is the definition of done for any code change.
 - Smallest verifiable change, with tests or smoke checks. Report exact files changed and commands run.
 
+## Working method (every slot, every model)
+
+The method is the contract — whichever CLI fills a slot, it works like this:
+
+- Understand first: read every file the change touches and trace the flow end to end before editing. No pattern-match patches.
+- Root cause over symptom: before changing shared code, check its callers; fix once, where all paths converge.
+- Prefer deletion and reuse over addition. No speculative abstraction, config, or scaffolding.
+- Verify by execution: run the check and read its output before claiming anything. A claim without a run is invention.
+- Report outcome first: `done` or `blocked` in the first line, failures quoted verbatim, deviations from the prompt named.
+- Parallel when independent, serial when coupled — never two writers in one worktree.
+
 ## Task management
 
 Backlog lives in {{TASK_TRACKER_DETAILS}}. **No work without a tracked issue/task.** Rules: `docs/orchestration/tasks.md`. Linear-specific rules are optional: `docs/orchestration/linear.md`.

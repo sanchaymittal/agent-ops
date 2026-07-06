@@ -6,6 +6,7 @@ Read when: dispatching, supervising, or executing work as coordinator or worker.
 
 - **Coordinator** (the interactive session): plans, dispatches, verifies, commits, updates the configured tracker. Does not implement worker tasks itself.
 - **Workers**: project-scoped roles (roster in `AGENTS.md`), spawned yolo/non-interactive, one per worktree. **Workers never commit.**
+- Dispatch independent issues in parallel, one worker per worktree each; serialize anything touching the same files.
 
 ## Model allocation
 
