@@ -1,6 +1,6 @@
 # {{PROJECT_NAME}} — Agent Operating Contract
 
-Every agent (Claude Code, Codex, agy/Antigravity, OpenCode) working in this repo follows this file. `CLAUDE.md` symlinks here so all four CLIs read one contract. Humans start at `README.md` when present; otherwise start here until the project README exists.
+Every agent CLI working in this repo (Claude Code, Codex, agy/Antigravity, OpenCode, Hermes, or any other that reads `AGENTS.md`) follows this file. `CLAUDE.md` symlinks here so every CLI reads one contract. Humans start at `README.md` when present; otherwise start here until the project README exists.
 
 ## What this repo is
 
@@ -19,6 +19,17 @@ TODO(project): 2–3 lines — what this product is. When scope exists, freeze i
 - Never commit secrets or private user data. `{{VERIFY_CMD}}` is the definition of done for any code change.
 - Smallest verifiable change, with tests or smoke checks. Report exact files changed and commands run.
 
+## Working method (every slot, every model)
+
+The method is the contract — whichever CLI fills a slot, it works like this:
+
+- Understand first: read every file the change touches and trace the flow end to end before editing. No pattern-match patches.
+- Root cause over symptom: before changing shared code, check its callers; fix once, where all paths converge.
+- Prefer deletion and reuse over addition. No speculative abstraction, config, or scaffolding.
+- Verify by execution: run the check and read its output before claiming anything. A claim without a run is invention.
+- Report outcome first: `done` or `blocked` in the first line, failures quoted verbatim, deviations from the prompt named.
+- Parallel when independent, serial when coupled — never two writers in one worktree.
+
 ## Task management
 
 Backlog lives in {{TASK_TRACKER_DETAILS}}. **No work without a tracked issue/task.** Rules: `docs/orchestration/tasks.md`. Linear-specific rules are optional: `docs/orchestration/linear.md`.
@@ -27,13 +38,15 @@ Backlog lives in {{TASK_TRACKER_DETAILS}}. **No work without a tracked issue/tas
 
 - The coordinator plans, dispatches, verifies, commits, and updates the configured tracker. Workers implement. **Workers never commit.**
 - Dispatch = tracked issue/task → prompt file → worker → report file → verify → commit. Checklist: `docs/orchestration/index.md`. Orca substrate + stability rules: `docs/orchestration/orca.md`.
-- Model allocation: coordinator = codex (must have tracker access when an external tracker is configured); planning + decision reviews = Claude `fable` first; implementation = agy; review = codex; misc/cheap work = agy/codex/free models — never `fable`.
+- Model allocation (chosen at init, see `docs/orchestration/index.md`): coordinator = {{COORDINATOR}} (must have tracker access when an external tracker is configured); planning + decision reviews = {{PLANNER}} first; implementation = {{CODER}}; review = {{REVIEWER}}; misc/cheap work = any cheap/free model — never {{PLANNER}}.
+- Slots are bindings, not identities: any CLI can fill any slot; the protocol and role files do not change with the model.
 - Cross-model review: the model that authored a change never reviews it.
+- Typo-class changes (no behavior, no design choice) → coordinator fixes inline and commits; the dispatch ceremony is for real tasks.
 - Every commit and report names the exact role used: `<role>: <summary> ({{ISSUE_PREFIX}}-xx)`.
 
 ## Roster (project-scoped roles)
 
-Same 9 roles in each CLI dir: `.claude/agents/` (Claude), `.codex/agents/` (Codex), `.agents/agents/` (agy), `.opencode/agents/` (OpenCode).
+Same 9 roles in each CLI dir: `.claude/agents/` (Claude), `.codex/agents/` (Codex), `.agents/agents/` (agy), `.opencode/agents/` (OpenCode). CLIs without a native roster dir (e.g. Hermes) load the role file by path from the dispatch prompt.
 
 | Role | Use for |
 | --- | --- |
@@ -44,7 +57,7 @@ Same 9 roles in each CLI dir: `.claude/agents/` (Claude), `.codex/agents/` (Code
 | `engineering-prompt-engineer` | Prompt design + evals |
 | `engineering-devops-automator` | CI, env management, deploy pipeline |
 | `engineering-code-reviewer` | Review of worker output |
-| `engineering-software-architect` | Architecture/planning reviews (pairs with `fable`) |
+| `engineering-software-architect` | Architecture/planning reviews (pairs with {{PLANNER}}) |
 | `engineering-technical-writer` | Docs — must respect the CAG budgets above |
 
 ## Layout

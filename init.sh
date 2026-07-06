@@ -6,6 +6,7 @@ usage() {
   echo "usage: $0 TARGET_DIR PROJECT_NAME ISSUE_PREFIX [VERIFY_CMD]" >&2
   echo "example: $0 ~/github/example-app example-app EX 'npm run verify'" >&2
   echo "linear: LINEAR_TEAM=eng LINEAR_PROJECT=example-app $0 ~/github/example-app example-app EX 'npm run verify'" >&2
+  echo "models: COORDINATOR=hermes PLANNER=fable CODER=fable REVIEWER=codex $0 ... (defaults: codex/fable/agy/codex)" >&2
   exit 1
 }
 
@@ -29,7 +30,18 @@ else
   T_TRACKER_UPDATE="update the issue tracker"
 fi
 
-export T_NAME=$2 T_PREFIX T_PREFIX_LOWER T_VERIFY T_TRACKER_NAME T_TRACKER_DETAILS T_TRACKER_UPDATE
+# model allocation (override via env; defaults preserve prior behavior)
+T_COORDINATOR=${COORDINATOR:-codex}
+T_PLANNER=${PLANNER:-fable}
+T_CODER=${CODER:-agy}
+T_REVIEWER=${REVIEWER:-codex}
+if [ "$T_CODER" = "$T_REVIEWER" ]; then
+  echo "refusing: CODER and REVIEWER must differ (cross-model review rule)" >&2
+  exit 1
+fi
+
+export T_NAME=$2 T_PREFIX T_PREFIX_LOWER T_VERIFY T_TRACKER_NAME T_TRACKER_DETAILS T_TRACKER_UPDATE \
+  T_COORDINATOR T_PLANNER T_CODER T_REVIEWER
 SRC="$(cd "$(dirname "$0")/template" && pwd)"
 
 mkdir -p "$TARGET"
@@ -72,11 +84,16 @@ find "$TARGET/docs" "$TARGET/.orchestration" "$TARGET/AGENTS.md" -type f -name '
     s/\{\{ISSUE_PREFIX\}\}/$ENV{T_PREFIX}/g;
     s/\{\{ISSUE_PREFIX_LOWER\}\}/$ENV{T_PREFIX_LOWER}/g;
     s/\{\{VERIFY_CMD\}\}/$ENV{T_VERIFY}/g;
+    s/\{\{COORDINATOR\}\}/$ENV{T_COORDINATOR}/g;
+    s/\{\{PLANNER\}\}/$ENV{T_PLANNER}/g;
+    s/\{\{CODER\}\}/$ENV{T_CODER}/g;
+    s/\{\{REVIEWER\}\}/$ENV{T_REVIEWER}/g;
   '
 
 ln -s AGENTS.md "$TARGET/CLAUDE.md"
 
 echo "done: $TARGET"
+echo "models: coordinator=$T_COORDINATOR planner=$T_PLANNER coder=$T_CODER reviewer=$T_REVIEWER"
 echo "next:"
 echo "  1. AGENTS.md — fill both TODO(project) blocks (description, layout table)"
 echo "  2. create or refresh README.md if the target repo does not already have one"

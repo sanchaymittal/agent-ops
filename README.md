@@ -1,6 +1,6 @@
 # agent-ops
 
-Operating system for multi-agent repos: one thin `AGENTS.md` contract, CAG-style docs indexes, optional issue-tracker integration, prompt-to-report dispatch protocol, and a 9-role roster for four CLIs (Claude Code, Codex, agy/Antigravity, OpenCode).
+Operating system for multi-agent repos: one thin `AGENTS.md` contract, CAG-style docs indexes, optional issue-tracker integration, prompt-to-report dispatch protocol, and a 9-role roster shipped for four CLIs (Claude Code, Codex, agy/Antigravity, OpenCode). Model allocation is yours to choose at init — any CLI that reads `AGENTS.md` (hermes, claude/fable, codex, agy, opencode, …) can fill any slot; the protocol and role files stay the same.
 
 ## Apply to a repo
 
@@ -10,7 +10,13 @@ Operating system for multi-agent repos: one thin `AGENTS.md` contract, CAG-style
 
 # Optional Linear wiring
 LINEAR_TEAM=eng LINEAR_PROJECT=example-app ./init.sh ~/github/example-app example-app EX "npm run verify"
+
+# Optional model allocation (defaults: COORDINATOR=codex PLANNER=fable CODER=agy REVIEWER=codex)
+# e.g. Hermes coordinates, fable plans AND codes, codex reviews:
+COORDINATOR=hermes CODER=fable ./init.sh ~/github/example-app example-app EX "npm run verify"
 ```
+
+`CODER` and `REVIEWER` must differ — the cross-model review rule (author never reviews own change) is enforced at init.
 
 Works on new and existing repos. Refuses to overwrite any managed file that already exists in `TARGET_DIR`. Ships only `AGENTS.md`, `CLAUDE.md`, `docs/`, `.orchestration/`, and `*/agents/` role files; existing settings (`.claude/settings.json` etc.) are untouched.
 
