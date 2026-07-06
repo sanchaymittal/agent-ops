@@ -18,6 +18,13 @@ COORDINATOR=hermes CODER=fable ./init.sh ~/github/example-app example-app EX "np
 
 `CODER` and `REVIEWER` must differ — the cross-model review rule (author never reviews own change) is enforced at init.
 
+```sh
+# Optional codebase map for large repos: agents navigate a generated wiki instead of grepping
+GRAPHIFY=1 ./init.sh ~/github/example-app example-app EX "npm run verify"
+```
+
+`GRAPHIFY=1` only adds the pointer row in `docs/index.md`; generating `graphify-out/wiki/` is your tooling's job, and the row says so — a stale map is worse than grep. Skip it for small repos: the CAG indexes already cover them.
+
 Works on new and existing repos. Refuses to overwrite any managed file that already exists in `TARGET_DIR`. Ships only `AGENTS.md`, `CLAUDE.md`, `docs/`, `.orchestration/`, and `*/agents/` role files; existing settings (`.claude/settings.json` etc.) are untouched.
 
 Then, in the target repo:
