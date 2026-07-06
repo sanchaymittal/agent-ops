@@ -11,13 +11,15 @@ Read when: dispatching, supervising, or executing work as coordinator or worker.
 
 | Slot | Model | Notes |
 | --- | --- | --- |
-| Coordinator | codex | Runs the checklist below; must have tracker access when an external tracker is configured. Verifying dispatches it coordinated is fine; reviewing code it authored is not. |
-| Planning / decision review | Claude `fable` | Architecture, gates, tie-breaks — not misc work |
-| Implementation | agy (Antigravity) | Default coder, with project roles |
-| Review | codex | `engineering-code-reviewer` role |
-| Misc / cheap | agy / codex / free models | Never `fable` |
+| Coordinator | {{COORDINATOR}} | Runs the checklist below; must have tracker access when an external tracker is configured. Verifying dispatches it coordinated is fine; reviewing code it authored is not. |
+| Planning / decision review | {{PLANNER}} | Architecture, gates, tie-breaks — not misc work |
+| Implementation | {{CODER}} | Default coder, with project roles |
+| Review | {{REVIEWER}} | `engineering-code-reviewer` role |
+| Misc / cheap | any cheap/free model | Never {{PLANNER}} |
 
-Cross-model review rule: the model that authored a change never reviews it (agy writes → codex reviews; codex writes → agy or `fable` reviews).
+Slots are bindings set at init (`COORDINATOR=… PLANNER=… CODER=… REVIEWER=… ./init.sh …`); any CLI that reads `AGENTS.md` (claude/fable, codex, agy, opencode, hermes, …) can fill any slot. The dispatch protocol and role files are model-independent — swap the model, keep the method.
+
+Cross-model review rule: the model that authored a change never reviews it ({{CODER}} writes → {{REVIEWER}} reviews; {{REVIEWER}} writes → {{CODER}} or {{PLANNER}} reviews).
 
 ## Dispatch checklist (every task)
 
