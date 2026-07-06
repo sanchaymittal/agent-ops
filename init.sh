@@ -7,6 +7,7 @@ usage() {
   echo "example: $0 ~/github/example-app example-app EX 'npm run verify'" >&2
   echo "linear: LINEAR_TEAM=eng LINEAR_PROJECT=example-app $0 ~/github/example-app example-app EX 'npm run verify'" >&2
   echo "models: COORDINATOR=hermes PLANNER=fable CODER=fable REVIEWER=codex $0 ... (defaults: codex/fable/agy/codex)" >&2
+  echo "graphify: GRAPHIFY=1 $0 ... (adds a codebase-map row pointing at graphify-out/wiki, for large repos)" >&2
   exit 1
 }
 
@@ -100,3 +101,8 @@ echo "  2. create or refresh README.md if the target repo does not already have 
 echo "  3. docs/gates/index.md — one row per human-provisioned dependency"
 echo "  4. ensure '$T_VERIFY' exists and is green"
 echo "  5. commit; configure '$T_TRACKER_NAME' if the repo needs an external backlog"
+
+if [ -n "${GRAPHIFY:-}" ]; then
+  printf '| Codebase map | [`graphify-out/wiki/index.md`](../graphify-out/wiki/index.md) | Generated codebase knowledge graph — regenerate before trusting; stale map is worse than grep |\n' >> "$TARGET/docs/index.md"
+  echo "  6. generate graphify-out/wiki (graphify) so the codebase-map row resolves"
+fi
