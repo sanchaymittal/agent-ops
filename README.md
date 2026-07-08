@@ -43,7 +43,7 @@ CLAUDE.md -> AGENTS.md # all four CLIs read one file
 docs/
   index.md             # concern router + CAG read protocol
   gates/               # live blocker table (index) + per-gate detail (blockers.md)
-  orchestration/       # dispatch checklist + task tracker + optional Linear adapter + orca.md
+  orchestration/       # dispatch checklist + task tracker + escalation advisor + optional Linear adapter + orca.md
   product/ runbooks/ engineering/   # skeleton indexes, fill as the project grows
 .orchestration/        # prompts/ + reports/ dispatch records (README documents conventions)
 .claude/agents/ .codex/agents/ .agents/agents/ .opencode/agents/   # same 9 roles each
@@ -55,6 +55,7 @@ docs/
 - **Issue-tracker-first:** no work without an issue/task, including meta/process work. Linear is supported but optional.
 - **Dispatch:** issue/task → prompt file → yolo non-interactive worker (one per worktree, never commits) → report file → coordinator verifies → commit `<role>: <summary> (PREFIX-xx)` → tracker updated.
 - **Stability:** prompt files are the idempotent dispatch unit — hung worker = kill + respawn same file; orchestrator substrate down = same protocol via subagents or a plain terminal.
+- **Escalation:** verify fails twice or a worker returns `blocked: decision:` → coordinator one-shot consults PLANNER (the advisor), appends the advice to the prompt file, respawns the same file; max 2 consults per issue, then escalate to a human.
 
 ## License
 

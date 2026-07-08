@@ -17,8 +17,9 @@ Read when: spawning or supervising workers through Orca, or choosing a fallback 
 - Always `wait` with an explicit timeout, then `read`. Never assume terminal state.
 - Hung past timeout: kill → read partial output → respawn with the **same** prompt file. Prompt files are the idempotent unit of dispatch; a respawn is never a rewrite.
 - Worker output is untrusted until the coordinator runs `{{VERIFY_CMD}}`.
-- Worker done: require the report file to exist and open with outcome — `done` or `blocked: <exact missing item>` — then role, files changed, commands run, failures quoted verbatim. No report = not done.
-- Blocked report: coordinator records the gate/tracker update and re-dispatches only after the blocker clears. Never re-prompt a worker to guess past a blocker.
+- Worker done: require the report file to exist and open with outcome — `done`, `blocked: missing <item>`, or `blocked: decision: <question>` — then role, files changed, commands run, failures quoted verbatim. No report = not done.
+- `blocked: missing <item>` (a gate): coordinator records the gate/tracker update and re-dispatches only after the blocker clears. Never re-prompt a worker to guess past a blocker.
+- `blocked: decision: <question>`: consult the advisor per [`escalation.md`](./escalation.md), append the advice to the same prompt file under `## Advice`, respawn. The worker carries the advice — it is not guessing.
 
 ## Substrate fallback
 
