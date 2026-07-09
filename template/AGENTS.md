@@ -38,7 +38,7 @@ Backlog lives in {{TASK_TRACKER_DETAILS}}. **No work without a tracked issue/tas
 
 - The coordinator plans, dispatches, verifies, commits, and updates the configured tracker. Workers implement. **Workers never commit.**
 - Dispatch = tracked issue/task → prompt file → worker → report file → verify → commit. Checklist: `docs/orchestration/index.md`. Orca substrate + stability rules: `docs/orchestration/orca.md`.
-- Model allocation (chosen at init, see `docs/orchestration/index.md`): coordinator = {{COORDINATOR}} (must have tracker access when an external tracker is configured); planning + decision reviews = {{PLANNER}} first (also the on-demand escalation advisor — triggers in `docs/orchestration/escalation.md`); implementation = {{CODER}}; review = {{REVIEWER}}; misc/cheap work = any cheap/free model — never {{PLANNER}}.
+- Model allocation is modular: docs name slots (COORDINATOR orchestrates, PLANNER advises + escalation consults, CODER implements, REVIEWER reviews); the slot→model table lives only in `docs/orchestration/models.md`. Swap a model there — nothing else changes.
 - Slots are bindings, not identities: any CLI can fill any slot; the protocol and role files do not change with the model.
 - Cross-model review: the model that authored a change never reviews it.
 - Typo-class changes (no behavior, no design choice) → coordinator fixes inline and commits; the dispatch ceremony is for real tasks.
@@ -57,7 +57,7 @@ Same 9 roles in each CLI dir: `.claude/agents/` (Claude), `.codex/agents/` (Code
 | `engineering-prompt-engineer` | Prompt design + evals |
 | `engineering-devops-automator` | CI, env management, deploy pipeline |
 | `engineering-code-reviewer` | Review of worker output |
-| `engineering-software-architect` | Architecture/planning reviews (pairs with {{PLANNER}}) |
+| `engineering-software-architect` | Architecture/planning reviews (pairs with the PLANNER slot) |
 | `engineering-technical-writer` | Docs — must respect the CAG budgets above |
 
 ## Layout

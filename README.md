@@ -18,6 +18,8 @@ COORDINATOR=hermes CODER=fable ./init.sh ~/github/example-app example-app EX "np
 
 `CODER` and `REVIEWER` must differ — the cross-model review rule (author never reviews own change) is enforced at init.
 
+Allocation is modular: init writes the slot→model table into `docs/orchestration/models.md` and every other doc names slots (COORDINATOR/PLANNER/CODER/REVIEWER) only. Swap a model later by editing that one table — no re-init.
+
 ```sh
 # Optional codebase map for large repos: agents navigate a generated wiki instead of grepping
 GRAPHIFY=1 ./init.sh ~/github/example-app example-app EX "npm run verify"
