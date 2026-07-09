@@ -10,17 +10,7 @@ Read when: dispatching, supervising, or executing work as coordinator or worker.
 
 ## Model allocation
 
-| Slot | Model | Notes |
-| --- | --- | --- |
-| Coordinator | {{COORDINATOR}} | Runs the checklist below; must have tracker access when an external tracker is configured. Verifying dispatches it coordinated is fine; reviewing code it authored is not. |
-| Planning / decision review | {{PLANNER}} | Architecture, gates, tie-breaks — not misc work; doubles as the on-demand advisor ([escalation.md](./escalation.md)) |
-| Implementation | {{CODER}} | Default coder, with project roles |
-| Review | {{REVIEWER}} | `engineering-code-reviewer` role |
-| Misc / cheap | any cheap/free model | Never {{PLANNER}} |
-
-Slots are bindings set at init (`COORDINATOR=… PLANNER=… CODER=… REVIEWER=… ./init.sh …`); any CLI that reads `AGENTS.md` (claude/fable, codex, agy, opencode, hermes, …) can fill any slot. The dispatch protocol and role files are model-independent — swap the model, keep the method.
-
-Cross-model review rule: the model that authored a change never reviews it ({{CODER}} writes → {{REVIEWER}} reviews; {{REVIEWER}} writes → {{CODER}} or {{PLANNER}} reviews).
+Slot→model bindings live in one place: [`models.md`](./models.md). Docs (including this one) name slots — COORDINATOR, PLANNER, CODER, REVIEWER, MISC — never models. Verifying dispatches the COORDINATOR coordinated is fine; reviewing code it authored is not (cross-model review rule, in `models.md`).
 
 ## Dispatch checklist (every task)
 
@@ -34,6 +24,7 @@ Cross-model review rule: the model that authored a change never reviews it ({{CO
 
 | File | Covers |
 | --- | --- |
+| [`models.md`](./models.md) | Slot→model bindings — the only file to edit when swapping a model |
 | [`orca.md`](./orca.md) | Spawn flags, stability rules, hang recovery, substrate fallback |
 | [`tasks.md`](./tasks.md) | Generic tracker rules, status flow, branch naming, who updates what |
 | [`linear.md`](./linear.md) | Optional Linear-specific adapter rules |
