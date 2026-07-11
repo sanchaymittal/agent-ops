@@ -1,6 +1,6 @@
 # {{PROJECT_NAME}} — Agent Operating Contract
 
-Every agent CLI working in this repo (Claude Code, Codex, agy/Antigravity, OpenCode, Hermes, or any other that reads `AGENTS.md`) follows this file. `CLAUDE.md` symlinks here so every CLI reads one contract. Humans start at `README.md` when present; otherwise start here until the project README exists.
+Every agent CLI working in this repo (Claude Code, Codex, agy/Antigravity, Grok, OpenCode, Hermes, or any other that reads `AGENTS.md`) follows this file. `CLAUDE.md` symlinks here so every CLI reads one contract. Humans start at `README.md` when present; otherwise start here until the project README exists.
 
 ## What this repo is
 
@@ -46,7 +46,7 @@ Backlog lives in {{TASK_TRACKER_DETAILS}}. **No work without a tracked issue/tas
 
 ## Roster (project-scoped roles)
 
-Same 9 roles in each CLI dir: `.claude/agents/` (Claude), `.codex/agents/` (Codex), `.agents/agents/` (agy), `.opencode/agents/` (OpenCode). CLIs without a native roster dir (e.g. Hermes) load the role file by path from the dispatch prompt.
+Same 9 roles in each CLI dir: `.claude/agents/` (Claude), `.codex/agents/` (Codex), `.agents/agents/` (agy), `.opencode/agents/` (OpenCode). CLIs without a native roster dir (e.g. Hermes, Grok) load the role file by path from the dispatch prompt.
 
 | Role | Use for |
 | --- | --- |

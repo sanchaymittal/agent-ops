@@ -8,7 +8,7 @@ Read when: spawning or supervising workers through Orca, or choosing a fallback 
   - `codex exec --sandbox danger-full-access --dangerously-bypass-approvals-and-sandbox`
   - `claude --dangerously-skip-permissions`
   - `agy --dangerously-skip-permissions`
-  - Any other CLI (e.g. `hermes`): use its own yolo/non-interactive flag. No yolo mode → not usable as a worker; coordinator duty is still fine (that's the interactive session).
+  - Any other CLI (e.g. `hermes`, `grok`): use its own yolo/non-interactive flag. No yolo mode → not usable as a worker; coordinator duty is still fine (that's the interactive session).
 - If a CLI cannot select the project role as a native agent, inline the role file into the prompt and instruct the model to follow it. Never dispatch an unqualified generic prompt.
 - One worker per worktree. Never two writers in one tree. Never nest orca-inside-orca.
 

@@ -14,5 +14,5 @@ Every other doc names slots (COORDINATOR, PLANNER, CODER, REVIEWER), never model
 
 Rules (hold regardless of which models are bound):
 
-- Any CLI that reads `AGENTS.md` (claude/fable, codex, agy, opencode, hermes, …) can fill any slot; protocol and role files are model-independent.
+- Any CLI that reads `AGENTS.md` (claude/fable, codex, agy, grok, opencode, hermes, …) can fill any slot; protocol and role files are model-independent.
 - Cross-model review: the model that authored a change never reviews it (CODER writes → REVIEWER reviews; REVIEWER writes → CODER or PLANNER reviews). CODER and REVIEWER bindings must differ.

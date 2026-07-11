@@ -1,6 +1,6 @@
 # agent-ops
 
-Operating system for multi-agent repos: one thin `AGENTS.md` contract, CAG-style docs indexes, optional issue-tracker integration, prompt-to-report dispatch protocol, and a 9-role roster shipped for four CLIs (Claude Code, Codex, agy/Antigravity, OpenCode). Model allocation is yours to choose at init — any CLI that reads `AGENTS.md` (hermes, claude/fable, codex, agy, opencode, …) can fill any slot; the protocol and role files stay the same.
+Operating system for multi-agent repos: one thin `AGENTS.md` contract, CAG-style docs indexes, optional issue-tracker integration, prompt-to-report dispatch protocol, and a 9-role roster shipped for four CLIs (Claude Code, Codex, agy/Antigravity, OpenCode). Model allocation is yours to choose at init — any CLI that reads `AGENTS.md` (hermes, claude/fable, codex, agy, grok, opencode, …) can fill any slot; the protocol and role files stay the same.
 
 ## Apply to a repo
 
