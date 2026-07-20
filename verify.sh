@@ -6,10 +6,12 @@ TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/agent-ops-verify.XXXXXX")
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 bash -n "$ROOT/init.sh" "$ROOT/verify.sh" "$ROOT/template/.orchestration/verify.sh" \
-  "$ROOT/tests/init.sh" "$ROOT/tests/verify-report.sh"
+  "$ROOT/template/.orchestration/preflight.sh" "$ROOT/template/.orchestration/lease.sh" \
+  "$ROOT/tests/init.sh" "$ROOT/tests/verify-report.sh" "$ROOT/tests/preflight-lease.sh"
 
 "$ROOT/tests/init.sh"
 "$ROOT/tests/verify-report.sh"
+"$ROOT/tests/preflight-lease.sh"
 
 while IFS= read -r index; do
   lines=$(wc -l <"$index" | tr -d ' ')

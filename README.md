@@ -48,7 +48,7 @@ docs/
   gates/               # live blocker table (index) + per-gate detail (blockers.md)
   orchestration/       # dispatch checklist + task tracker + escalation advisor + optional Linear adapter + orca.md
   product/ runbooks/ engineering/   # skeleton indexes, fill as the project grows
-.orchestration/        # prompt/report templates + hash/scope verifier + immutable dispatch records
+.orchestration/        # prompt/report templates + preflight + writer lease + hash/scope verifier + immutable dispatch records
 .claude/agents/ .codex/agents/ .agents/agents/ .opencode/agents/   # same 9 roles each
 ```
 
@@ -57,6 +57,7 @@ docs/
 - **CAG reads:** always load `AGENTS.md` + `docs/index.md` + `docs/gates/index.md`; concern indexes on touch; leaf docs only when an index says so. Indexes ≤ 40 lines.
 - **Issue-tracker-first:** no work without an issue/task, including meta/process work. Linear is supported but optional.
 - **Dispatch:** issue/task → prompt from `TEMPLATE.md` → preflight + writer lease → least-privilege worker → hash-bound report → report verifier → coordinator verify/review → commit → tracker update.
+- **Preflight + lease:** `.orchestration/preflight.sh` fails a dispatch before any context is spent (worktree, base SHA vs HEAD, verify command, CLI, role roster, free lease — all local, no network) and `.orchestration/lease.sh` enforces one writer per worktree with an atomic `mkdir` lock. A second writer is rejected without touching the held record; stale leases are reported, never auto-reaped.
 - **Completion:** a `done` report must carry an `Acceptance check` (`run: <command>` or `artifact: <path>`) matching its prompt plus non-empty evidence; `.orchestration/verify.sh --run-verify <report>` re-executes the verify command after the final edit and refuses commands with external effects.
 - **Stability:** prompt files are the idempotent dispatch unit — hung worker = preserve evidence + respawn the same file in a fresh worktree; orchestrator substrate down = same protocol via subagents or a plain terminal.
 - **Escalation:** verify fails twice or a worker returns `blocked: decision:` → coordinator one-shot consults PLANNER (the advisor), appends the advice to the prompt file, respawns the same file; max 2 consults per issue, then escalate to a human.

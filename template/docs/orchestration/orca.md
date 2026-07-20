@@ -4,11 +4,11 @@ Read when: spawning or supervising workers through Orca, or choosing a fallback 
 
 ## Spawn
 
-- Preflight before loading task context: runtime + CLI version, selected model/quota, open gates, base SHA, clean worktree, verify command, required credentials, and an unclaimed writer lease.
+- Preflight before loading task context: runtime + CLI version, selected model/quota, open gates, base SHA, clean worktree, verify command, required credentials, and an unclaimed writer lease. `.orchestration/preflight.sh` executes the locally checkable subset (worktree, base SHA vs HEAD, verify command, CLI, role roster, lease) and returns `blocked: <capability|task|lease>: <detail>`; quota, gates, and credentials stay manual.
 - Non-interactive means fail fast, not maximum privilege. Choose the narrowest profile: `review` (read-only), `implement` (worktree write, no network), `dependencies` (declared network/package access), or `publish` (explicit external-action approval).
 - A missing capability returns `blocked: missing <capability>`; never open an invisible approval prompt or silently upgrade permissions.
 - If a CLI cannot select the project role as a native agent, inline the role file into the prompt and instruct the model to follow it. Never dispatch an unqualified generic prompt.
-- Record one writer lease per worktree + dispatch. Reject a second writer before launch; reviewers use read-only access or a separate checkout. Never nest orca-inside-orca.
+- Record one writer lease per worktree + dispatch with `.orchestration/lease.sh acquire --dispatch <id>`; release it on completion or after terminating a hung worker. A second writer is rejected before launch and the held lease is never overwritten; breaking someone else's or a stale lease requires `--force`. Reviewers use read-only access or a separate checkout. Never nest orca-inside-orca.
 
 ## Supervise
 

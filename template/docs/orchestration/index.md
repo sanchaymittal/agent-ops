@@ -16,7 +16,7 @@ Slot→model bindings live in one place: [`models.md`](./models.md). Docs (inclu
 
 1. Tracked issue/task exists (`{{ISSUE_PREFIX}}-xx`) and is unblocked per [`../gates/index.md`](../gates/index.md).
 2. Copy `.orchestration/prompts/TEMPLATE.md` to `.orchestration/prompts/{{ISSUE_PREFIX_LOWER}}-xx-<role>-<slug>.md`; fill every identity, scope, permission, acceptance, and verification field. Hard task → consult [escalation.md](./escalation.md).
-3. Preflight and acquire the worktree write lease, then spawn with the narrowest capability profile per [`orca.md`](./orca.md).
+3. `.orchestration/preflight.sh --verify-cmd '{{VERIFY_CMD}}' --base-sha <sha> --cli <cli> --role <role>`, then `.orchestration/lease.sh acquire --dispatch {{ISSUE_PREFIX}}-xx`; spawn with the narrowest capability profile per [`orca.md`](./orca.md). Any `blocked:` line → fix the cause, do not spawn.
 4. Worker writes the matching report from `.orchestration/reports/TEMPLATE.md`, runs final checks after the last edit, records the diff SHA, then runs `.orchestration/verify.sh <report>`.
 5. Coordinator runs `.orchestration/verify.sh --run-verify <report>` (re-runs `{{VERIFY_CMD}}` itself) plus independent review against the same diff SHA (two verify failures → [escalation.md](./escalation.md)).
 6. Commit as `<role>: <summary> ({{ISSUE_PREFIX}}-xx)` only after all evidence is green, then {{TASK_TRACKER_UPDATE}} per [`tasks.md`](./tasks.md).
