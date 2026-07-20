@@ -204,6 +204,20 @@ test_run_verify_refuses_external_action() {
     'rm -R somedir'
     'rm -fR somedir'
     'curl https://example.com'
+    'npm test | tee out.txt'
+    'npm test > out.txt'
+    'npm test 2>&1'
+    'npm test && git push origin main'
+    'npm test; git push origin main'
+    'npm test &'
+    'npm test $(git push origin main)'
+    'npm test `git push origin main`'
+    './scripts/sh -c git-push'
+    'tools/curl https://example.com'
+    'python3 -c import os'
+    'node -e process.exit'
+    '../outside/verify.sh'
+    '/bin/sh -c true'
   )
 
   for command in "${commands[@]}"; do
@@ -236,6 +250,24 @@ test_run_verify_runs_project_local_command() {
   fi
 }
 
+# The documented supported workflow: a repository-local ./verify.sh must still
+# run under the capability profile.
+test_run_verify_runs_repo_verify_script() {
+  local target="$TMP_ROOT/run-verify-script" base_sha diff_sha report
+  create_repo "$target" "./verify.sh"
+  base_sha=$(git -C "$target" rev-parse HEAD)
+  printf 'changed\n' >"$target/result.txt"
+  printf '#!/usr/bin/env bash\nprintf "repo verify ran\\n"\n' >"$target/verify.sh"
+  chmod +x "$target/verify.sh"
+  diff_sha=$(cd "$target" && ./.orchestration/verify.sh --diff-sha)
+  report=$(write_evidence "$target" DEMO-13 "result.txt,verify.sh" "$base_sha" "$diff_sha")
+
+  if ! "$target/.orchestration/verify.sh" --run-verify "$report" 2>"$TMP_ROOT/err"; then
+    fail "--run-verify refused the documented ./verify.sh command"
+  fi
+  grep -q 'repo verify ran' "$TMP_ROOT/err" || fail "./verify.sh output was not captured"
+}
+
 test_run_verify_accepts_report_after_final_edit() {
   local target="$TMP_ROOT/run-verify-pass" base_sha diff_sha report
   create_repo "$target"
@@ -262,4 +294,5 @@ test_run_verify_rejects_failing_verify_command
 test_run_verify_refuses_external_action
 test_run_verify_accepts_report_after_final_edit
 test_run_verify_runs_project_local_command
+test_run_verify_runs_repo_verify_script
 printf 'PASS: report verification tests\n'
