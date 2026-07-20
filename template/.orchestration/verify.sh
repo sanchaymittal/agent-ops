@@ -117,26 +117,64 @@ verify_acceptance() {
   esac
 }
 
-# Fail-closed: a verify command must be a plain argv invoking a project-local
-# runner. Two shapes are accepted and nothing else — a worktree-relative path,
-# or a bare name from the runner allowlist — and no shell metacharacter may
-# appear anywhere, so quoting, escaping, substitution, and chaining cannot
-# smuggle an external action past the check. That is what makes shell wrappers
-# (`sh -c`, `eval`, `env`, `xargs`) and destructive commands (`rm -R`)
-# unreachable: they are not on the allowlist, in any casing or quoting.
-# ponytail: arguments are not inspected — an allowlisted runner told to do
-# something external (`make deploy`) still runs. Capability profiles are the
-# upgrade path.
-VERIFY_RUNNERS='make npm pnpm yarn bun npx cargo go mvn gradle pytest tox python python3 node deno ruby rake bundle printf echo true false'
+# Fail-closed capability profile for the re-run command. Three rules, in order,
+# and a command must satisfy all three:
+#
+#   1. Character profile. Only [alnum] and space . _ / = : @ + - may appear.
+#      Every shell composition character is therefore absent by construction:
+#      pipes, `;`/`&&`/`||` lists, `&` backgrounding, `<`/`>` redirects,
+#      `$(...)`/`` ` `` substitution, `~`/`*`/`?` expansion, and both quote
+#      styles. Nothing can be escaped or quoted back in.
+#   2. Program shape. The first word must be a worktree-relative path
+#      (`./x`, `dir/x`, never absolute, never containing `..`) or a bare name
+#      on VERIFY_RUNNERS. Nothing else runs.
+#   3. Capability deny set. No word may have a basename in VERIFY_DENIED —
+#      shell/interpreter wrappers, privilege and exec helpers, network
+#      utilities, and destructive utilities — regardless of path or shape.
+#      This is what stops `./sh`, `tools/curl`, and `rm -R` even though rule 2
+#      would accept their shape. It applies to every word, not just the
+#      program: only argv[0] is executed, so an argument match refuses a
+#      command that would have been inert (`make watch`). That is deliberate —
+#      fail closed, and never silently accept a command that reads as an
+#      external action.
+#
+# The command is then split on whitespace and executed as argv. No shell
+# interprets the recorded string at any point, so rule 1 is the only parser.
+#
+# ponytail: arguments of an allowed runner are not semantically inspected — an
+# allowlisted runner told to do something external (`make deploy`) still runs.
+# Per-runner argument profiles are the upgrade path.
+VERIFY_RUNNERS='make npm pnpm yarn cargo go mvn gradle pytest tox rake bundle printf echo true false'
+
+VERIFY_DENIED='sh bash zsh ksh dash csh tcsh fish ash busybox
+env eval exec command source xargs sudo doas su chroot nohup setsid script
+timeout time watch nice ionice stdbuf strace ltrace open osascript
+perl python python2 python3 ruby node deno bun npx irb php lua tclsh expect awk gawk sed
+curl wget nc ncat netcat telnet ftp sftp ssh scp rsync git hg svn docker kubectl aws gcloud az
+rm rmdir unlink mv dd shred srm mkfs fdisk diskutil chmod chown chgrp chflags
+kill killall pkill halt reboot shutdown launchctl systemctl crontab at'
 
 require_local_verify_command() {
-  local command=$1 program
+  local command=$1 program word base denied
+  denied=" $(printf '%s' "$VERIFY_DENIED" | tr '\n' ' ') "
   if printf '%s' "$command" | LC_ALL=C grep -q '[^[:alnum:][:space:]._/=:@+-]'; then
     die "refusing to re-run a verify command containing shell metacharacters: $command"
   fi
-  program=${command%%[[:space:]]*}
+
+  read -r -a VERIFY_ARGV <<<"$command"
+  [ ${#VERIFY_ARGV[@]} -gt 0 ] || die "refusing to re-run an empty verify command"
+
+  for word in "${VERIFY_ARGV[@]}"; do
+    base=${word##*/}
+    case $denied in
+      *" $base "*) die "refusing to re-run a verify command using a denied capability ($base): $command" ;;
+    esac
+  done
+
+  program=${VERIFY_ARGV[0]}
   case $program in
-    /*|*..*) die "refusing to re-run a verify command outside the worktree: $command" ;;
+    /*) die "refusing to re-run a verify command outside the worktree: $command" ;;
+    ..|../*|*/..|*/../*) die "refusing to re-run a verify command outside the worktree: $command" ;;
     */*) return 0 ;;
   esac
   case " $VERIFY_RUNNERS " in
@@ -152,7 +190,7 @@ run_verify_command() {
   require_local_verify_command "$command"
   log=$(mktemp "${TMPDIR:-/tmp}/agent-ops-verify-log.XXXXXX")
   status=0
-  ( cd "$root" && eval "$command" ) >"$log" 2>&1 || status=$?
+  ( cd "$root" && "${VERIFY_ARGV[@]}" ) >"$log" 2>&1 || status=$?
   printf '%s\n' "--- verify command output (first 32768 bytes) ---" >&2
   head -c 32768 "$log" >&2
   printf '\n%s\n' "--- exit $status ---" >&2
