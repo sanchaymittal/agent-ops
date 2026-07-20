@@ -1,0 +1,3 @@
+# Writer lease is live worktree state, never evidence. Keeping it untracked
+# also keeps `verify.sh --diff-sha` and its scope check blind to it.
+.lease/

@@ -28,7 +28,7 @@ The method is the contract — whichever CLI fills a slot, it works like this:
 - Prefer deletion and reuse over addition. No speculative abstraction, config, or scaffolding.
 - Verify by execution: run the check and read its output before claiming anything. A claim without a run is invention.
 - Evidence is bounded: cap command output at 32 KiB by default; truncated output is not evidence — rerun a narrower query or save an artifact and cite its path + hash.
-- One writer lease per worktree. Preflight the CLI/model/quota, gates, base SHA, verify command, permissions, clean tree, and lease before loading task context.
+- One writer lease per worktree. Preflight the CLI/model/quota, gates, base SHA, verify command, permissions, clean tree, and lease before loading task context: `.orchestration/preflight.sh` checks the local half and `.orchestration/lease.sh acquire --dispatch <id>` takes the lease. A `blocked:` line means do not start.
 - Final-state proof: after the last edit, run the required checks, inspect diff/status, compute the diff SHA, and validate the report with `.orchestration/verify.sh`. A `done` report needs an `Acceptance check` (`run: <command>` or `artifact: <path>`) that matches its prompt, plus the evidence it produced.
 - Report outcome first: `done`, `blocked: missing <item>`, or `blocked: decision: <question>` in the first line, failures quoted verbatim, deviations from the prompt named.
 - Parallel when independent, serial when coupled — never two writers in one worktree.
