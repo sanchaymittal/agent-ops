@@ -5,7 +5,7 @@ Read when: dispatching, supervising, or executing work as coordinator or worker.
 ## Model
 
 - **Coordinator** (the interactive session): plans, dispatches, verifies, commits, updates the configured tracker. Does not implement worker tasks itself.
-- **Workers**: project-scoped roles (roster in `AGENTS.md`), spawned yolo/non-interactive, one per worktree. **Workers never commit.**
+- **Workers**: project-scoped roles (roster in `AGENTS.md`), spawned non-interactive with the least-privilege capability profile, one writer lease per worktree. **Workers never commit.**
 - Dispatch independent issues in parallel, one worker per worktree each; serialize anything touching the same files.
 
 ## Model allocation
@@ -15,10 +15,11 @@ Slot→model bindings live in one place: [`models.md`](./models.md). Docs (inclu
 ## Dispatch checklist (every task)
 
 1. Tracked issue/task exists (`{{ISSUE_PREFIX}}-xx`) and is unblocked per [`../gates/index.md`](../gates/index.md).
-2. Write prompt file `.orchestration/prompts/{{ISSUE_PREFIX_LOWER}}-xx-<role>-<slug>.md`: role file, scope, allowed files, acceptance criteria, "do not commit". Hard task → consult per [escalation.md](./escalation.md) before spawn.
-3. Spawn worker per substrate rules: [`orca.md`](./orca.md).
-4. Worker writes `.orchestration/reports/{{ISSUE_PREFIX_LOWER}}-xx-<role>-<slug>.md` (same basename as prompt).
-5. Coordinator: `{{VERIFY_CMD}}` (fails twice → [escalation.md](./escalation.md)) → commit as `<role>: <summary> ({{ISSUE_PREFIX}}-xx)` → {{TASK_TRACKER_UPDATE}} per [`tasks.md`](./tasks.md).
+2. Copy `.orchestration/prompts/TEMPLATE.md` to `.orchestration/prompts/{{ISSUE_PREFIX_LOWER}}-xx-<role>-<slug>.md`; fill every identity, scope, permission, acceptance, and verification field. Hard task → consult [escalation.md](./escalation.md).
+3. Preflight and acquire the worktree write lease, then spawn with the narrowest capability profile per [`orca.md`](./orca.md).
+4. Worker writes the matching report from `.orchestration/reports/TEMPLATE.md`, runs final checks after the last edit, records the diff SHA, then runs `.orchestration/verify.sh <report>`.
+5. Coordinator runs `.orchestration/verify.sh --run-verify <report>` (re-runs `{{VERIFY_CMD}}` itself) plus independent review against the same diff SHA (two verify failures → [escalation.md](./escalation.md)).
+6. Commit as `<role>: <summary> ({{ISSUE_PREFIX}}-xx)` only after all evidence is green, then {{TASK_TRACKER_UPDATE}} per [`tasks.md`](./tasks.md).
 
 ## Detail
 

@@ -1,6 +1,6 @@
 # agent-ops
 
-Operating system for multi-agent repos: one thin `AGENTS.md` contract, CAG-style docs indexes, optional issue-tracker integration, prompt-to-report dispatch protocol, and a 9-role roster shipped for four CLIs (Claude Code, Codex, agy/Antigravity, OpenCode). Model allocation is yours to choose at init — any CLI that reads `AGENTS.md` (hermes, claude/fable, codex, agy, opencode, …) can fill any slot; the protocol and role files stay the same.
+Operating system for multi-agent repos: one thin `AGENTS.md` contract, CAG-style docs indexes, optional issue-tracker integration, hash-bound prompt-to-report evidence, and a 9-role roster shipped for four CLIs (Claude Code, Codex, agy/Antigravity, OpenCode). Model allocation is yours to choose at init — any CLI that reads `AGENTS.md` (hermes, claude/fable, codex, agy, opencode, …) can fill any slot; the protocol and role files stay the same.
 
 ## Apply to a repo
 
@@ -35,7 +35,8 @@ Then, in the target repo:
 2. Create or refresh `README.md` if the target repo does not already have one.
 3. `docs/gates/index.md` — one row per human-provisioned dependency (infra, credentials, external data, owner decisions).
 4. Ensure the verify command exists and is green; it is the definition of done.
-5. Commit. Configure the repo's issue tracker if it needs an external backlog.
+5. Run `./.orchestration/verify.sh --diff-sha` once to confirm the evidence tool works in the initialized Git repo.
+6. Commit. Configure the repo's issue tracker if it needs an external backlog.
 
 ## What you get
 
@@ -47,7 +48,7 @@ docs/
   gates/               # live blocker table (index) + per-gate detail (blockers.md)
   orchestration/       # dispatch checklist + task tracker + escalation advisor + optional Linear adapter + orca.md
   product/ runbooks/ engineering/   # skeleton indexes, fill as the project grows
-.orchestration/        # prompts/ + reports/ dispatch records (README documents conventions)
+.orchestration/        # prompt/report templates + hash/scope verifier + immutable dispatch records
 .claude/agents/ .codex/agents/ .agents/agents/ .opencode/agents/   # same 9 roles each
 ```
 
@@ -55,9 +56,14 @@ docs/
 
 - **CAG reads:** always load `AGENTS.md` + `docs/index.md` + `docs/gates/index.md`; concern indexes on touch; leaf docs only when an index says so. Indexes ≤ 40 lines.
 - **Issue-tracker-first:** no work without an issue/task, including meta/process work. Linear is supported but optional.
-- **Dispatch:** issue/task → prompt file → yolo non-interactive worker (one per worktree, never commits) → report file → coordinator verifies → commit `<role>: <summary> (PREFIX-xx)` → tracker updated.
-- **Stability:** prompt files are the idempotent dispatch unit — hung worker = kill + respawn same file; orchestrator substrate down = same protocol via subagents or a plain terminal.
+- **Dispatch:** issue/task → prompt from `TEMPLATE.md` → preflight + writer lease → least-privilege worker → hash-bound report → report verifier → coordinator verify/review → commit → tracker update.
+- **Completion:** a `done` report must carry an `Acceptance check` (`run: <command>` or `artifact: <path>`) matching its prompt plus non-empty evidence; `.orchestration/verify.sh --run-verify <report>` re-executes the verify command after the final edit and refuses commands with external effects.
+- **Stability:** prompt files are the idempotent dispatch unit — hung worker = preserve evidence + respawn the same file in a fresh worktree; orchestrator substrate down = same protocol via subagents or a plain terminal.
 - **Escalation:** verify fails twice or a worker returns `blocked: decision:` → coordinator one-shot consults PLANNER (the advisor), appends the advice to the prompt file, respawns the same file; max 2 consults per issue, then escalate to a human.
+
+## Verify this template
+
+Run `./verify.sh`. It checks shell syntax, clean-install and failure behavior, report/diff attestation, CAG index budgets, cross-CLI role-body parity, and whitespace errors.
 
 ## License
 
