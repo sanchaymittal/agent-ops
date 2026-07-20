@@ -36,16 +36,29 @@ T_COORDINATOR=${COORDINATOR:-codex}
 T_PLANNER=${PLANNER:-fable}
 T_CODER=${CODER:-agy}
 T_REVIEWER=${REVIEWER:-codex}
+for binding in "$T_COORDINATOR" "$T_PLANNER" "$T_CODER" "$T_REVIEWER"; do
+  if [ -z "$(printf '%s' "$binding" | tr -d '[:space:]')" ]; then
+    echo "refusing: model bindings must not be blank" >&2
+    exit 1
+  fi
+done
 if [ "$T_CODER" = "$T_REVIEWER" ]; then
   echo "refusing: CODER and REVIEWER must differ (cross-model review rule)" >&2
   exit 1
 fi
 
+case ${GRAPHIFY:-0} in
+  0) T_GRAPHIFY=0 ;;
+  1) T_GRAPHIFY=1 ;;
+  *)
+    echo "refusing: GRAPHIFY must be 0 or 1" >&2
+    exit 1
+    ;;
+esac
+
 export T_NAME=$2 T_PREFIX T_PREFIX_LOWER T_VERIFY T_TRACKER_NAME T_TRACKER_DETAILS T_TRACKER_UPDATE \
   T_COORDINATOR T_PLANNER T_CODER T_REVIEWER
 SRC="$(cd "$(dirname "$0")/template" && pwd)"
-
-mkdir -p "$TARGET"
 
 conflicts=()
 while IFS= read -r -d '' rel; do
@@ -72,11 +85,18 @@ if [ ${#conflicts[@]} -gt 0 ]; then
   exit 1
 fi
 
-# copy payload (dotdirs included); managed-file conflicts were checked above
-tar -C "$SRC" --exclude='.DS_Store' -cf - . | tar -C "$TARGET" -xf -
+# Render the complete payload before touching the target. This keeps a failed
+# substitution, symlink, or optional feature from leaving a partial install.
+STAGE=$(mktemp -d "${TMPDIR:-/tmp}/agent-ops-stage.XXXXXX")
+cleanup() {
+  rm -rf "$STAGE"
+}
+trap cleanup EXIT
+
+tar -C "$SRC" --exclude='.DS_Store' -cf - . | tar -C "$STAGE" -xf -
 
 # substitute placeholders in payload markdown (perl for BSD/GNU portability)
-find "$TARGET/docs" "$TARGET/.orchestration" "$TARGET/AGENTS.md" -type f -name '*.md' -print0 |
+find "$STAGE/docs" "$STAGE/.orchestration" "$STAGE/AGENTS.md" -type f -name '*.md' -print0 |
   xargs -0 perl -pi -e '
     s/\{\{PROJECT_NAME\}\}/$ENV{T_NAME}/g;
     s/\{\{TASK_TRACKER_NAME\}\}/$ENV{T_TRACKER_NAME}/g;
@@ -91,7 +111,18 @@ find "$TARGET/docs" "$TARGET/.orchestration" "$TARGET/AGENTS.md" -type f -name '
     s/\{\{REVIEWER\}\}/$ENV{T_REVIEWER}/g;
   '
 
-ln -s AGENTS.md "$TARGET/CLAUDE.md"
+ln -s AGENTS.md "$STAGE/CLAUDE.md"
+
+if [ "$T_GRAPHIFY" = 1 ]; then
+  printf '| Codebase map | [`graphify-out/wiki/index.md`](../graphify-out/wiki/index.md) | Generated codebase knowledge graph — regenerate before trusting; stale map is worse than grep |\n' >> "$STAGE/docs/index.md"
+fi
+
+# Managed-file conflicts were checked above; merge the rendered payload only
+# after every staging operation has succeeded.
+mkdir -p "$TARGET"
+tar -C "$STAGE" --exclude='.DS_Store' -cf - . | tar -C "$TARGET" -xf -
+rm -rf "$STAGE"
+trap - EXIT
 
 echo "done: $TARGET"
 echo "models: coordinator=$T_COORDINATOR planner=$T_PLANNER coder=$T_CODER reviewer=$T_REVIEWER"
@@ -100,9 +131,9 @@ echo "  1. AGENTS.md — fill both TODO(project) blocks (description, layout tab
 echo "  2. create or refresh README.md if the target repo does not already have one"
 echo "  3. docs/gates/index.md — one row per human-provisioned dependency"
 echo "  4. ensure '$T_VERIFY' exists and is green"
-echo "  5. commit; configure '$T_TRACKER_NAME' if the repo needs an external backlog"
+echo "  5. initialize git, then run './.orchestration/verify.sh --diff-sha'"
+echo "  6. commit; configure '$T_TRACKER_NAME' if the repo needs an external backlog"
 
-if [ -n "${GRAPHIFY:-}" ]; then
-  printf '| Codebase map | [`graphify-out/wiki/index.md`](../graphify-out/wiki/index.md) | Generated codebase knowledge graph — regenerate before trusting; stale map is worse than grep |\n' >> "$TARGET/docs/index.md"
-  echo "  6. generate graphify-out/wiki (graphify) so the codebase-map row resolves"
+if [ "$T_GRAPHIFY" = 1 ]; then
+  echo "  7. generate graphify-out/wiki (graphify) so the codebase-map row resolves"
 fi

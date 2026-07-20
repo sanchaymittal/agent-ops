@@ -27,6 +27,9 @@ The method is the contract — whichever CLI fills a slot, it works like this:
 - Root cause over symptom: before changing shared code, check its callers; fix once, where all paths converge.
 - Prefer deletion and reuse over addition. No speculative abstraction, config, or scaffolding.
 - Verify by execution: run the check and read its output before claiming anything. A claim without a run is invention.
+- Evidence is bounded: cap command output at 32 KiB by default; truncated output is not evidence — rerun a narrower query or save an artifact and cite its path + hash.
+- One writer lease per worktree. Preflight the CLI/model/quota, gates, base SHA, verify command, permissions, clean tree, and lease before loading task context.
+- Final-state proof: after the last edit, run the required checks, inspect diff/status, compute the diff SHA, and validate the report with `.orchestration/verify.sh`. A `done` report needs an `Acceptance check` (`run: <command>` or `artifact: <path>`) that matches its prompt, plus the evidence it produced.
 - Report outcome first: `done`, `blocked: missing <item>`, or `blocked: decision: <question>` in the first line, failures quoted verbatim, deviations from the prompt named.
 - Parallel when independent, serial when coupled — never two writers in one worktree.
 
@@ -37,7 +40,7 @@ Backlog lives in {{TASK_TRACKER_DETAILS}}. **No work without a tracked issue/tas
 ## Orchestration — coordinator/worker
 
 - The coordinator plans, dispatches, verifies, commits, and updates the configured tracker. Workers implement. **Workers never commit.**
-- Dispatch = tracked issue/task → prompt file → worker → report file → verify → commit. Checklist: `docs/orchestration/index.md`. Orca substrate + stability rules: `docs/orchestration/orca.md`.
+- Dispatch = tracked issue/task → prompt from `.orchestration/prompts/TEMPLATE.md` → worker → matching report → `.orchestration/verify.sh` → coordinator verify/review → commit. Checklist: `docs/orchestration/index.md`.
 - Model allocation is modular: docs name slots (COORDINATOR orchestrates, PLANNER advises + escalation consults, CODER implements, REVIEWER reviews); the slot→model table lives only in `docs/orchestration/models.md`. Swap a model there — nothing else changes.
 - Slots are bindings, not identities: any CLI can fill any slot; the protocol and role files do not change with the model.
 - Cross-model review: the model that authored a change never reviews it.
