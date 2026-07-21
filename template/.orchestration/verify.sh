@@ -165,7 +165,11 @@ require_local_verify_command() {
   [ ${#VERIFY_ARGV[@]} -gt 0 ] || die "refusing to re-run an empty verify command"
 
   for word in "${VERIFY_ARGV[@]}"; do
-    base=${word##*/}
+    # Basenames are folded to lower case before the lookup: the deny set is
+    # written in lower case, and a case-insensitive filesystem resolves
+    # `tools/CURL` to the same binary as `tools/curl`. `tr` keeps this on
+    # Bash 3.2, which has no `${var,,}`.
+    base=$(printf '%s' "${word##*/}" | LC_ALL=C tr '[:upper:]' '[:lower:]')
     case $denied in
       *" $base "*) die "refusing to re-run a verify command using a denied capability ($base): $command" ;;
     esac
