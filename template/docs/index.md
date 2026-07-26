@@ -15,7 +15,7 @@ One directory per concern, each with its own ≤40-line `index.md`. Load indexes
 | Concern | Index | Contents |
 | --- | --- | --- |
 | Gates | [`gates/index.md`](./gates/index.md) | Live blocker status table — mandatory pre-work check |
-| Orchestration | [`orchestration/index.md`](./orchestration/index.md) | How work gets dispatched: coordinator/worker, orca, issue tracker |
+| Orchestration | [`orchestration/index.md`](./orchestration/index.md) | How work gets dispatched: coordinator/worker, supervision, issue tracker |
 | Product | [`product/index.md`](./product/index.md) | Scope, metrics, product source docs |
 | Runbooks | [`runbooks/index.md`](./runbooks/index.md) | Step-by-step owner/agent procedures |
 | Engineering | [`engineering/index.md`](./engineering/index.md) | Verify pipeline, test/smoke conventions |

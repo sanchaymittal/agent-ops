@@ -9,7 +9,7 @@ Read when: spawning, supervising, or recovering workers on any substrate. States
 - Non-interactive means fail fast, not maximum privilege. Choose the narrowest profile: `review` (read-only), `implement` (worktree write, no network), `dependencies` (declared network/package access), or `publish` (explicit external-action approval).
 - A missing capability returns `blocked: missing <capability>`; never open an invisible approval prompt or silently upgrade permissions.
 - If a CLI cannot select the project role as a native agent, inline the role file into the prompt and instruct the model to follow it. Never dispatch an unqualified generic prompt.
-- Record one writer lease per worktree + dispatch with `.orchestration/lease.sh acquire --dispatch <id>`; release it on completion or after terminating a hung worker. A second writer is rejected before launch and the held lease is never overwritten; breaking someone else's or a stale lease requires `--force`. Reviewers use read-only access or a separate checkout. Never nest orca-inside-orca.
+- Record one writer lease per worktree + dispatch with `.orchestration/lease.sh acquire --dispatch <id>`; release it on completion or after terminating a hung worker. A second writer is rejected before launch and the held lease is never overwritten; breaking someone else's or a stale lease requires `--force`. Reviewers use read-only access or a separate checkout. Never nest one orchestrator inside another.
 
 ## Supervise
 
