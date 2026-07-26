@@ -38,5 +38,26 @@ for claude_role in "$ROOT"/template/.claude/agents/*.md; do
   }
 done
 
+# A role is dispatched by the name it declares, so that name must be the slug
+# the docs advertise. Frontmatter drift here silently breaks `--agent <role>`.
+for role_file in "$ROOT"/template/.claude/agents/*.md "$ROOT"/template/.agents/agents/*.md \
+  "$ROOT"/template/.opencode/agents/*.md; do
+  slug=$(basename "$role_file" .md)
+  declared=$(awk '/^name: /{sub(/^name: /, ""); print; exit}' "$role_file")
+  [ "$declared" = "$slug" ] || {
+    printf 'roster name drift: %s declares %s\n' "${role_file#"$ROOT"/}" "${declared:-<none>}" >&2
+    exit 1
+  }
+done
+
+for role_file in "$ROOT"/template/.codex/agents/*.toml; do
+  slug=$(basename "$role_file" .toml)
+  declared=$(awk -F'"' '/^name = /{print $2; exit}' "$role_file")
+  [ "$declared" = "$slug" ] || {
+    printf 'roster name drift: %s declares %s\n' "${role_file#"$ROOT"/}" "${declared:-<none>}" >&2
+    exit 1
+  }
+done
+
 git -C "$ROOT" diff --check
 printf 'PASS: repository verification\n'
