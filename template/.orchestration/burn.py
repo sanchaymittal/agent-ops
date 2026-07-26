@@ -17,26 +17,42 @@ Scope limits, so the numbers are not read for more than they are:
 """
 import argparse, collections, datetime, glob, json, os, re, sys
 
-POLL = re.compile(r"orchestration check|terminal read|terminal wait|orchestration (?:inbox|status)", re.I)
-DISPATCH = re.compile(r"orchestration (?:dispatch|task-create|reply|send)|terminal (?:send|create)|spawn", re.I)
+# Word-bounded on purpose: these match against raw command text, so an
+# unanchored `spawn` would count `grep -rn spawn docs/` -- and `respawn` in
+# prose -- as dispatched work, inflating the denominator that the budget
+# divides by and turning a violation into a pass.
+POLL = re.compile(r"\borchestration (?:check|inbox|status)\b|\bterminal (?:read|wait)\b", re.I)
+DISPATCH = re.compile(r"\borchestration (?:dispatch|task-create|reply|send)\b|\bterminal (?:send|create)\b", re.I)
 # A dispatch that starts work, as opposed to replying to or messaging a worker
 # already running. This is the denominator of the supervision budget.
-TASK_START = re.compile(r"orchestration (?:dispatch|task-create)|terminal create|spawn", re.I)
+TASK_START = re.compile(r"\borchestration (?:dispatch|task-create)\b|\bterminal create\b", re.I)
 POLL_TOOLS = {"wait", "wait_agent", "write_stdin"}
 DISPATCH_TOOLS = {"send_message", "spawn_agent", "followup_task"}
 TASK_START_TOOLS = {"spawn_agent"}
 
 
 def classify(name, args):
-    if name in POLL_TOOLS or POLL.search(args):
+    """Bucket a call. The tool name is authoritative; only fall back to reading
+    the arguments when the name alone does not say what the call is."""
+    if name == "apply_patch":
+        return "EDIT"
+    if name in POLL_TOOLS:
         return "POLL"
-    if name in DISPATCH_TOOLS or DISPATCH.search(args):
+    if name in DISPATCH_TOOLS:
         return "DISPATCH"
-    return "EDIT" if name == "apply_patch" else "WORK"
+    if POLL.search(args):
+        return "POLL"
+    return "DISPATCH" if DISPATCH.search(args) else "WORK"
 
 
 def starts_task(name, args):
+    if name == "apply_patch":  # patch text is content, never a dispatch
+        return False
     return name in TASK_START_TOOLS or bool(TASK_START.search(args))
+
+
+def ratio_text(per_task):
+    return "n/a" if per_task == float("inf") else f"{per_task:.1f}"
 
 
 def scan(path, since):
@@ -81,9 +97,8 @@ def report(buckets, tasks, label, indent=""):
     polls = buckets["POLL"][1]
     # No dispatches but still polling is unbounded waste, not a clean ratio.
     per_task = polls / tasks if tasks else (float("inf") if polls else 0.0)
-    ratio = "n/a" if per_task == float("inf") else f"{per_task:.1f}"
     print(f"{indent}{label}: {total/1e6:.1f}M tokens, {calls} round-trips, "
-          f"{polls} polls / {tasks} tasks = {ratio} per task")
+          f"{polls} polls / {tasks} tasks = {ratio_text(per_task)} per task")
     for name in ("POLL", "WORK", "DISPATCH", "EDIT", "<none>"):
         tok, cnt = buckets[name]
         if tok:
@@ -115,17 +130,41 @@ def main():
 
     combined = collections.defaultdict(lambda: [0, 0])
     tasks = 0
+    # The budget divides by dispatched tasks, so only sessions that dispatched
+    # something are coordinators the rule can apply to. A worker session waits
+    # on its own commands and dispatches nothing; judging it would flag normal
+    # work as unbounded supervision.
+    coordinator_polls = coordinator_tasks = 0
+    worst = (0.0, "")
     for path, (started, buckets, session_tasks) in sorted(found, key=lambda x: x[1][0]):
         for name, (tok, cnt) in buckets.items():
             combined[name][0] += tok
             combined[name][1] += cnt
         tasks += session_tasks
+        label = f"{started} {os.path.basename(path)[:40]}"
         if args.sessions:
-            report(buckets, session_tasks, f"{started} {os.path.basename(path)[:40]}", indent="  ")
+            report(buckets, session_tasks, label, indent="  ")
+        if not session_tasks:
+            continue
+        polls = buckets["POLL"][1]
+        coordinator_polls += polls
+        coordinator_tasks += session_tasks
+        if polls / session_tasks > worst[0]:
+            worst = (polls / session_tasks, label)
     print()
-    per_task = report(combined, tasks, f"all sessions since {since}")
-    if per_task > args.max_polls_per_task:
-        print(f"\nover budget: {per_task:.1f} supervision calls per dispatched task "
+    report(combined, tasks, f"all sessions since {since}")
+    if not coordinator_tasks:
+        print("no session dispatched a task — budget does not apply")
+        return 0
+
+    # The rule is per dispatch, so a pooled average is not enough: one runaway
+    # coordinator is exactly what an average over many quiet sessions hides.
+    pooled = coordinator_polls / coordinator_tasks
+    print(f"coordinator sessions: {coordinator_polls} polls / {coordinator_tasks} tasks "
+          f"= {pooled:.1f} per task; worst {worst[0]:.1f} — {worst[1]}")
+    breach = max(pooled, worst[0])
+    if breach > args.max_polls_per_task:
+        print(f"\nover budget: {breach:.1f} supervision calls per dispatched task "
               f"> {args.max_polls_per_task:.0f}. Wait wider — one blocking wait covering every "
               f"outstanding worker, window >= 15 minutes. See "
               f"docs/orchestration/supervision.md#supervise.")
