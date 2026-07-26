@@ -49,7 +49,7 @@ Backlog lives in {{TASK_TRACKER_DETAILS}}. **No work without a tracked issue/tas
 
 ## Roster (project-scoped roles)
 
-Same 9 roles in each CLI dir: `.claude/agents/` (Claude), `.codex/agents/` (Codex), `.agents/agents/` (agy), `.opencode/agents/` (OpenCode). CLIs without a native roster dir (e.g. Hermes) load the role file by path from the dispatch prompt.
+Same 9 roles in each CLI dir: `.claude/agents/` (Claude), `.codex/agents/` (Codex), `.agents/agents/` (agy), `.opencode/agents/` (OpenCode). Confirm a CLI actually resolves its roster — run its own agent-list command in the repo — before dispatching with `--agent <role>`. A CLI that resolves nothing (Hermes, and agy in some setups) loads the role file by path or inlined from the dispatch prompt.
 
 | Role | Use for |
 | --- | --- |
