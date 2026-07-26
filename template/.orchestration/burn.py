@@ -17,15 +17,32 @@ Scope limits, so the numbers are not read for more than they are:
 """
 import argparse, collections, datetime, glob, json, os, re, sys
 
-# Word-bounded on purpose: these match against raw command text, so an
-# unanchored `spawn` would count `grep -rn spawn docs/` -- and `respawn` in
-# prose -- as dispatched work, inflating the denominator that the budget
-# divides by and turning a violation into a pass.
-POLL = re.compile(r"\borchestration (?:check|inbox|status)\b|\bterminal (?:read|wait)\b", re.I)
-DISPATCH = re.compile(r"\borchestration (?:dispatch|task-create|reply|send)\b|\bterminal (?:send|create)\b", re.I)
+# These match raw command text, so both ends need anchoring. A bare `spawn`
+# counts `grep -rn spawn docs/` as dispatched work; a trailing \b counts the
+# read-only `dispatch-show` as a dispatch, because \b matches before a hyphen.
+# Either one inflates the denominator the budget divides by and turns a
+# violation into a pass, so subcommands are listed exactly and (?![\w-]) stops
+# a prefix from matching its own longer siblings.
+def _subcommands(group, *names):
+    return rf"\b{group}\s+(?:{'|'.join(names)})(?![\w-])"
+
+
+# Supervision: calls that only ask how a worker is doing.
+POLL = re.compile("|".join((
+    _subcommands("orchestration", "check", "inbox", "status", "task-list", "dispatch-show"),
+    _subcommands("terminal", "read", "wait", "list", "show"),
+)), re.I)
+# Moving work forward: sending, replying, creating, closing.
+DISPATCH = re.compile("|".join((
+    _subcommands("orchestration", "dispatch", "task-create", "task-update", "reply", "send"),
+    _subcommands("terminal", "send", "create", "close"),
+)), re.I)
 # A dispatch that starts work, as opposed to replying to or messaging a worker
 # already running. This is the denominator of the supervision budget.
-TASK_START = re.compile(r"\borchestration (?:dispatch|task-create)\b|\bterminal create\b", re.I)
+TASK_START = re.compile("|".join((
+    _subcommands("orchestration", "dispatch", "task-create"),
+    _subcommands("terminal", "create"),
+)), re.I)
 POLL_TOOLS = {"wait", "wait_agent", "write_stdin"}
 DISPATCH_TOOLS = {"send_message", "spawn_agent", "followup_task"}
 TASK_START_TOOLS = {"spawn_agent"}
@@ -68,6 +85,7 @@ def scan(path, since):
     buckets = collections.defaultdict(lambda: [0, 0])
     tasks = 0
     driver = "<none>"
+    pending_task = False
     for line in lines:
         try:
             ev = json.loads(line)
@@ -80,13 +98,17 @@ def scan(path, since):
             raw = payload.get("arguments") or payload.get("input") or ""
             raw = raw if isinstance(raw, str) else json.dumps(raw)
             driver = classify(name, raw)
-            tasks += starts_task(name, raw)
+            pending_task = pending_task or starts_task(name, raw)
         elif ev.get("type") == "event_msg" and kind == "token_count":
             usage = (payload.get("info") or {}).get("last_token_usage") or {}
             slot = buckets[driver]
             slot[0] += usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
             slot[1] += 1
-            driver = "<none>"
+            # Tasks are committed on the round-trip that carried them, the same
+            # way polls are. Counting a dispatch whose round-trip never landed
+            # would add to the denominator with no numerator to match it.
+            tasks += pending_task
+            driver, pending_task = "<none>", False
     return (started, buckets, tasks) if buckets else None
 
 
@@ -160,8 +182,9 @@ def main():
     # The rule is per dispatch, so a pooled average is not enough: one runaway
     # coordinator is exactly what an average over many quiet sessions hides.
     pooled = coordinator_polls / coordinator_tasks
-    print(f"coordinator sessions: {coordinator_polls} polls / {coordinator_tasks} tasks "
-          f"= {pooled:.1f} per task; worst {worst[0]:.1f} — {worst[1]}")
+    summary = (f"coordinator sessions: {coordinator_polls} polls / {coordinator_tasks} tasks "
+               f"= {pooled:.1f} per task")
+    print(f"{summary}; worst {worst[0]:.1f} — {worst[1]}" if worst[1] else summary)
     breach = max(pooled, worst[0])
     if breach > args.max_polls_per_task:
         print(f"\nover budget: {breach:.1f} supervision calls per dispatched task "

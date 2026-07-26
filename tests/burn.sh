@@ -11,25 +11,34 @@ fail() {
   exit 1
 }
 
+# Round-trip shapes taken from real rollouts under ~/.codex/sessions: a shell
+# command is `exec_command` carrying a `cmd` string (not an argv array), and a
+# blocking wait is the `wait` tool. Every round-trip is 10k tokens, so token
+# share stays fixed and only the supervision ratio moves.
+turn() { # $1 = tool name, $2 = arguments JSON (already escaped for the log)
+  printf '{"type":"response_item","payload":{"type":"function_call","name":"%s","arguments":"%s"}}\n' "$1" "$2"
+  printf '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":9000,"output_tokens":1000}}}}\n'
+}
+
+shell_turn() { # $1 = command line
+  turn exec_command "{\\\"cmd\\\":\\\"$1\\\",\\\"yield_time_ms\\\":10000,\\\"workdir\\\":\\\"/demo\\\"}"
+}
+
 # A rollout log with $1 polling round-trips, $2 task dispatches, $3 work
-# round-trips. Every round-trip is 10k tokens, so token share stays fixed and
-# only the supervision ratio moves.
+# round-trips.
 write_rollout() {
   local dir=$1 polls=$2 dispatches=$3 work=$4 i
   mkdir -p "$dir"
   {
     printf '{"type":"session_meta","payload":{"timestamp":"2026-07-24T01:00:00.000Z","cwd":"/demo"}}\n'
     for ((i = 0; i < dispatches; i++)); do
-      printf '{"type":"response_item","payload":{"type":"function_call","name":"exec","arguments":"{\\"command\\":[\\"bash\\",\\"-lc\\",\\"orca orchestration dispatch --task t%d --inject\\"]}"}}\n' "$i"
-      printf '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":9000,"output_tokens":1000}}}}\n'
+      shell_turn "orca orchestration dispatch --task t$i --inject"
     done
     for ((i = 0; i < polls; i++)); do
-      printf '{"type":"response_item","payload":{"type":"function_call","name":"wait","arguments":"{\\"cell_id\\":\\"1\\"}"}}\n'
-      printf '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":9000,"output_tokens":1000}}}}\n'
+      turn wait '{\"cell_id\":\"1\",\"yield_time_ms\":30000,\"max_tokens\":5000}'
     done
     for ((i = 0; i < work; i++)); do
-      printf '{"type":"response_item","payload":{"type":"function_call","name":"exec","arguments":"{\\"command\\":[\\"pytest\\"]}"}}\n'
-      printf '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":9000,"output_tokens":1000}}}}\n'
+      shell_turn "pytest -q"
     done
   } >"$dir/rollout-demo.jsonl"
 }
@@ -137,12 +146,11 @@ test_prose_mentioning_dispatch_words_is_not_a_task() {
   # If it counted as dispatched work it would inflate the denominator and turn
   # a real violation into a pass.
   write_rollout "$root/2026/07/24" 6 1 0
-  for phrase in "grep -rn spawn docs/" "grep -rn respawn docs/" "rg dispatched docs/"; do
-    {
-      printf '{"type":"response_item","payload":{"type":"function_call","name":"exec","arguments":"{\\"command\\":[\\"bash\\",\\"-lc\\",\\"%s\\"]}"}}\n' "$phrase"
-      printf '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":9000,"output_tokens":1000}}}}\n'
-    } >>"$root/2026/07/24/rollout-demo.jsonl"
-  done
+  {
+    shell_turn "grep -rn spawn docs/"
+    shell_turn "grep -rn respawn docs/"
+    shell_turn "rg dispatched docs/"
+  } >>"$root/2026/07/24/rollout-demo.jsonl"
   # One real dispatch, six polls: 6.0 per task, a clear violation. If the greps
   # counted as dispatches the ratio would fall to 1.5 and silently pass.
   if output=$(burn "$root"); then
@@ -154,11 +162,38 @@ test_prose_mentioning_dispatch_words_is_not_a_task() {
   esac
 }
 
+test_read_only_subcommands_count_as_supervision() {
+  local root="$TMP_ROOT/readonly" output
+  # `dispatch-show` and `task-list` only ask how a worker is doing, so they are
+  # supervision. A trailing \b in the dispatch pattern would match before the
+  # hyphen and score `dispatch-show` as dispatched work instead.
+  write_rollout "$root/2026/07/24" 6 1 0
+  {
+    shell_turn "orca orchestration dispatch-show --id d1"
+    shell_turn "orca orchestration dispatch-show --id d2"
+    shell_turn "orca orchestration task-list --json"
+    shell_turn "orca terminal list --json"
+  } >>"$root/2026/07/24/rollout-demo.jsonl"
+  if output=$(burn "$root"); then
+    fail "read-only subcommands must count against the budget: $output"
+  fi
+  case $output in
+    *'10 polls / 1 tasks = 10.0 per task'*) ;;
+    *) fail "expected 10 supervision calls over 1 dispatch, got: $output" ;;
+  esac
+}
+
 test_an_undefined_ratio_never_prints_as_inf() {
-  local root="$TMP_ROOT/prose" output
+  local root="$TMP_ROOT/undefined" output
+  write_rollout "$root/2026/07/24" 3 0 0
   output=$(burn "$root" 2>&1) || true
   case $output in
-    *inf*) fail "an undefined ratio must render as n/a, not inf: $output" ;;
+    *'= inf per task'* | *'over budget: inf'*)
+      fail "an undefined ratio must render as n/a, not inf: $output" ;;
+  esac
+  case $output in
+    *'= n/a per task'*) ;;
+    *) fail "expected the undefined ratio to render as n/a, got: $output" ;;
   esac
 }
 
@@ -167,10 +202,8 @@ test_patch_text_is_edit_not_dispatch() {
   write_rollout "$root/2026/07/24" 2 1 0
   # The tool name is authoritative: a patch that happens to contain the word
   # "dispatch" is still an edit.
-  {
-    printf '{"type":"response_item","payload":{"type":"function_call","name":"apply_patch","arguments":"{\\"input\\":\\"+ orca orchestration dispatch --task t1\\"}"}}\n'
-    printf '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":9000,"output_tokens":1000}}}}\n'
-  } >>"$root/2026/07/24/rollout-demo.jsonl"
+  turn apply_patch '{\"input\":\"+ orca orchestration dispatch --task t1\"}' \
+    >>"$root/2026/07/24/rollout-demo.jsonl"
   output=$(burn "$root") || fail "2 polls / 1 task is within budget: $output"
   case $output in
     *'2 polls / 1 tasks'*) ;;
@@ -229,6 +262,7 @@ test_budget_is_configurable
 test_empty_range_reports_that_nothing_was_checked
 test_malformed_lines_do_not_abort_the_scan
 test_prose_mentioning_dispatch_words_is_not_a_task
+test_read_only_subcommands_count_as_supervision
 test_an_undefined_ratio_never_prints_as_inf
 test_patch_text_is_edit_not_dispatch
 test_one_bad_session_is_not_hidden_by_quiet_ones
