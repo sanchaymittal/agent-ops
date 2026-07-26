@@ -2,7 +2,8 @@
 """Supervision-cost meter: what a coordinator spent watching vs doing.
 
 Reads Codex rollout logs (~/.codex/sessions/**/*.jsonl) and attributes every API
-round-trip to the tool call that caused it. Enforces the rule in
+round-trip to the tool call that drove it -- a round-trip with no preceding
+call lands in <none>. Enforces the rule in
 docs/orchestration/supervision.md: at most 2 supervision calls per dispatched
 task. The token shares it also prints are context, not the budget.
 
@@ -27,15 +28,20 @@ def _subcommands(group, *names):
     return rf"\b{group}\s+(?:{'|'.join(names)})(?![\w-])"
 
 
-# Supervision: calls that only ask how a worker is doing.
+# Supervision: calls that only ask how a worker is doing. `orca status` is
+# deliberately absent -- it reports whether the app is up, which is a preflight
+# check, not a question about a worker.
 POLL = re.compile("|".join((
-    _subcommands("orchestration", "check", "inbox", "status", "task-list", "dispatch-show"),
-    _subcommands("terminal", "read", "wait", "list", "show"),
+    _subcommands("orchestration", "check", "inbox", "status", "task-list", "task-get",
+                 "dispatch-show", "dispatch-list", "message-list", "run-status", "gate-list"),
+    _subcommands("terminal", "read", "wait", "list", "show", "inspect", "capture"),
 )), re.I)
-# Moving work forward: sending, replying, creating, closing.
+# Moving work forward: sending, replying, creating, closing. `ask` blocks for an
+# answer, which is the substitute for polling rather than an instance of it.
 DISPATCH = re.compile("|".join((
-    _subcommands("orchestration", "dispatch", "task-create", "task-update", "reply", "send"),
-    _subcommands("terminal", "send", "create", "close"),
+    _subcommands("orchestration", "dispatch", "task-dispatch", "task-create", "task-update",
+                 "reply", "send", "ask", "run", "run-stop", "gate-create"),
+    _subcommands("terminal", "send", "create", "close", "stop", "write", "open", "new"),
 )), re.I)
 # A dispatch that starts work, as opposed to replying to or messaging a worker
 # already running. This is the denominator of the supervision budget.
@@ -43,7 +49,7 @@ TASK_START = re.compile("|".join((
     _subcommands("orchestration", "dispatch", "task-create"),
     _subcommands("terminal", "create"),
 )), re.I)
-POLL_TOOLS = {"wait", "wait_agent", "write_stdin"}
+POLL_TOOLS = {"wait", "wait_agent"}
 DISPATCH_TOOLS = {"send_message", "spawn_agent", "followup_task"}
 TASK_START_TOOLS = {"spawn_agent"}
 
@@ -53,6 +59,10 @@ def classify(name, args):
     the arguments when the name alone does not say what the call is."""
     if name == "apply_patch":
         return "EDIT"
+    if name == "write_stdin":
+        # An empty write is a nudge to see what a worker is doing; a write that
+        # carries input is sending it work.
+        return "POLL" if '"chars":""' in args.replace(" ", "") else "DISPATCH"
     if name in POLL_TOOLS:
         return "POLL"
     if name in DISPATCH_TOOLS:
@@ -85,7 +95,7 @@ def scan(path, since):
     buckets = collections.defaultdict(lambda: [0, 0])
     tasks = 0
     driver = "<none>"
-    pending_task = False
+    pending_task = 0
     for line in lines:
         try:
             ev = json.loads(line)
@@ -98,7 +108,7 @@ def scan(path, since):
             raw = payload.get("arguments") or payload.get("input") or ""
             raw = raw if isinstance(raw, str) else json.dumps(raw)
             driver = classify(name, raw)
-            pending_task = pending_task or starts_task(name, raw)
+            pending_task += starts_task(name, raw)
         elif ev.get("type") == "event_msg" and kind == "token_count":
             usage = (payload.get("info") or {}).get("last_token_usage") or {}
             slot = buckets[driver]
@@ -108,7 +118,7 @@ def scan(path, since):
             # way polls are. Counting a dispatch whose round-trip never landed
             # would add to the denominator with no numerator to match it.
             tasks += pending_task
-            driver, pending_task = "<none>", False
+            driver, pending_task = "<none>", 0
     return (started, buckets, tasks) if buckets else None
 
 

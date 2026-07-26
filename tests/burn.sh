@@ -43,6 +43,11 @@ write_rollout() {
   } >"$dir/rollout-demo.jsonl"
 }
 
+raw_turn() { # $1 = raw (non-JSON) argument string, as `exec` really arrives
+  printf '{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"%s"}}\n' "$1"
+  printf '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":9000,"output_tokens":1000}}}}\n'
+}
+
 burn() {
   local root=$1
   shift
@@ -121,7 +126,13 @@ test_budget_is_configurable() {
 }
 
 test_empty_range_reports_that_nothing_was_checked() {
-  local root="$TMP_ROOT/ratio" output
+  local root="$TMP_ROOT/range" output
+  write_rollout "$root/2026/07/24" 9 1 0
+  # In range the same fixture is a clear violation, so the empty-range pass
+  # below can only come from the date filter.
+  if output=$(burn "$root"); then
+    fail "the fixture must be a violation when in range: $output"
+  fi
   output=$(burn "$root" --since 2027-01-01) || fail "an empty range is not a violation"
   case $output in
     *'nothing measured, budget not checked'*) ;;
@@ -247,6 +258,56 @@ test_per_session_breakdown_reports_each_session() {
   esac
 }
 
+test_two_dispatches_in_one_round_trip_count_twice() {
+  local root="$TMP_ROOT/batched" output
+  write_rollout "$root/2026/07/24" 4 0 0
+  # Two dispatch calls before a single token_count. Collapsing them to one task
+  # loses part of the denominator and inflates the ratio.
+  {
+    printf '{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\\"cmd\\":\\"orca orchestration dispatch --task a\\"}"}}\n'
+    printf '{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\\"cmd\\":\\"orca orchestration dispatch --task b\\"}"}}\n'
+    printf '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":9000,"output_tokens":1000}}}}\n'
+  } >>"$root/2026/07/24/rollout-demo.jsonl"
+  output=$(burn "$root") || fail "4 polls over 2 tasks is within budget: $output"
+  case $output in
+    *'4 polls / 2 tasks = 2.0 per task'*) ;;
+    *) fail "both dispatches in one round-trip must count, got: $output" ;;
+  esac
+}
+
+test_raw_argument_calls_are_classified() {
+  local root="$TMP_ROOT/rawargs" output
+  write_rollout "$root/2026/07/24" 0 1 0
+  # `exec` arrives as a custom_tool_call whose arguments are a raw string.
+  {
+    raw_turn 'const r = await sh(\"orca orchestration check --wait\");'
+    raw_turn 'const r = await sh(\"orca terminal read --terminal t1\");'
+    raw_turn 'const r = await sh(\"orca terminal read --terminal t2\");'
+  } >>"$root/2026/07/24/rollout-demo.jsonl"
+  if output=$(burn "$root"); then
+    fail "supervision in raw-argument calls must count: $output"
+  fi
+  case $output in
+    *'3 polls / 1 tasks = 3.0 per task'*) ;;
+    *) fail "expected raw-argument supervision to be counted, got: $output" ;;
+  esac
+}
+
+test_write_stdin_counts_as_supervision_only_when_empty() {
+  local root="$TMP_ROOT/stdin" output
+  write_rollout "$root/2026/07/24" 0 1 0
+  {
+    turn write_stdin '{\"chars\":\"\",\"session_id\":\"s1\"}'
+    turn write_stdin '{\"chars\":\"\",\"session_id\":\"s1\"}'
+    turn write_stdin '{\"chars\":\"continue the task\",\"session_id\":\"s1\"}'
+  } >>"$root/2026/07/24/rollout-demo.jsonl"
+  output=$(burn "$root") || fail "2 empty writes over 1 task is within budget: $output"
+  case $output in
+    *'2 polls / 1 tasks = 2.0 per task'*) ;;
+    *) fail "only the empty writes are supervision, got: $output" ;;
+  esac
+}
+
 test_bad_since_is_rejected() {
   local root="$TMP_ROOT/ratio" status=0
   python3 "$BURN" --root "$root" --since 07-24-2026 >/dev/null 2>&1 || status=$?
@@ -267,6 +328,9 @@ test_an_undefined_ratio_never_prints_as_inf
 test_patch_text_is_edit_not_dispatch
 test_one_bad_session_is_not_hidden_by_quiet_ones
 test_per_session_breakdown_reports_each_session
+test_two_dispatches_in_one_round_trip_count_twice
+test_raw_argument_calls_are_classified
+test_write_stdin_counts_as_supervision_only_when_empty
 test_bad_since_is_rejected
 
 printf 'PASS: supervision-cost meter\n'

@@ -66,14 +66,14 @@ while IFS= read -r -d '' rel; do
   if [ "$rel" != "." ] && [ -e "$TARGET/$rel" ] && [ ! -d "$TARGET/$rel" ]; then
     conflicts+=("$rel")
   fi
-done < <(cd "$SRC" && find . -name .DS_Store -prune -o -type d -print0)
+done < <(cd "$SRC" && find . -name .DS_Store -prune -o -name __pycache__ -prune -o -type d -print0)
 
 while IFS= read -r -d '' rel; do
   rel=${rel#./}
   if [ -e "$TARGET/$rel" ] || [ -L "$TARGET/$rel" ]; then
     conflicts+=("$rel")
   fi
-done < <(cd "$SRC" && find . -name .DS_Store -prune -o -type f -print0)
+done < <(cd "$SRC" && find . -name .DS_Store -prune -o -name __pycache__ -prune -o -type f -print0)
 
 if [ -e "$TARGET/CLAUDE.md" ] || [ -L "$TARGET/CLAUDE.md" ]; then
   conflicts+=("CLAUDE.md")
@@ -93,7 +93,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-tar -C "$SRC" --exclude='.DS_Store' -cf - . | tar -C "$STAGE" -xf -
+tar -C "$SRC" --exclude='.DS_Store' --exclude='__pycache__' -cf - . | tar -C "$STAGE" -xf -
 
 # substitute placeholders in payload markdown (perl for BSD/GNU portability)
 find "$STAGE/docs" "$STAGE/.orchestration" "$STAGE/AGENTS.md" -type f -name '*.md' -print0 |
@@ -120,7 +120,7 @@ fi
 # Managed-file conflicts were checked above; merge the rendered payload only
 # after every staging operation has succeeded.
 mkdir -p "$TARGET"
-tar -C "$STAGE" --exclude='.DS_Store' -cf - . | tar -C "$TARGET" -xf -
+tar -C "$STAGE" --exclude='.DS_Store' --exclude='__pycache__' -cf - . | tar -C "$TARGET" -xf -
 rm -rf "$STAGE"
 trap - EXIT
 
