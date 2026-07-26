@@ -28,20 +28,20 @@ def _subcommands(group, *names):
     return rf"\b{group}\s+(?:{'|'.join(names)})(?![\w-])"
 
 
-# Supervision: calls that only ask how a worker is doing. `orca status` is
-# deliberately absent -- it reports whether the app is up, which is a preflight
-# check, not a question about a worker.
+# Subcommand lists come from `orca orchestration --help` and `orca terminal
+# --help`, not from grepping logs: a log can contain a command that never
+# existed. `orca status` is deliberately absent -- it reports whether the app is
+# up, which is a preflight check, not a question about a worker.
 POLL = re.compile("|".join((
-    _subcommands("orchestration", "check", "inbox", "status", "task-list", "task-get",
-                 "dispatch-show", "dispatch-list", "message-list", "run-status", "gate-list"),
-    _subcommands("terminal", "read", "wait", "list", "show", "inspect", "capture"),
+    _subcommands("orchestration", "check", "inbox", "task-list", "dispatch-show", "gate-list"),
+    _subcommands("terminal", "list", "show", "read", "wait"),
 )), re.I)
-# Moving work forward: sending, replying, creating, closing. `ask` blocks for an
-# answer, which is the substitute for polling rather than an instance of it.
+# Moving work forward. `ask` is the worker blocking on an answer from the
+# coordinator, not the coordinator checking on the worker.
 DISPATCH = re.compile("|".join((
-    _subcommands("orchestration", "dispatch", "task-dispatch", "task-create", "task-update",
-                 "reply", "send", "ask", "run", "run-stop", "gate-create"),
-    _subcommands("terminal", "send", "create", "close", "stop", "write", "open", "new"),
+    _subcommands("orchestration", "send", "reply", "task-create", "task-update", "dispatch",
+                 "ask", "run", "run-stop", "gate-create", "gate-resolve", "reset"),
+    _subcommands("terminal", "send", "stop", "create", "switch", "close", "rename", "split"),
 )), re.I)
 # A dispatch that starts work, as opposed to replying to or messaging a worker
 # already running. This is the denominator of the supervision budget.
@@ -60,9 +60,14 @@ def classify(name, args):
     if name == "apply_patch":
         return "EDIT"
     if name == "write_stdin":
-        # An empty write is a nudge to see what a worker is doing; a write that
-        # carries input is sending it work.
-        return "POLL" if '"chars":""' in args.replace(" ", "") else "DISPATCH"
+        # A write with nothing in it is a nudge to see what a worker is doing;
+        # a write that carries input is sending it work. Control characters
+        # (^C and friends) are input, not a question.
+        try:
+            chars = json.loads(args).get("chars", "")
+        except (ValueError, AttributeError):
+            chars = args
+        return "POLL" if not chars.strip() else "DISPATCH"
     if name in POLL_TOOLS:
         return "POLL"
     if name in DISPATCH_TOOLS:
@@ -83,7 +88,7 @@ def ratio_text(per_task):
 
 
 def scan(path, since):
-    """-> (started, {bucket: [tokens, calls]}, tasks) or None if out of range."""
+    """-> (started, {bucket: [tokens, calls]}, tasks, round_trips) or None."""
     try:
         lines = open(path, encoding="utf-8", errors="replace").readlines()
         head = json.loads(lines[0])
@@ -92,8 +97,8 @@ def scan(path, since):
     started = (head.get("payload") or {}).get("timestamp", "")[:10]
     if started < since:
         return None
-    buckets = collections.defaultdict(lambda: [0, 0])
-    tasks = 0
+    buckets = collections.defaultdict(lambda: [0, 0])  # bucket -> [tokens, calls]
+    tasks = round_trips = 0
     driver = "<none>"
     pending_task = 0
     for line in lines:
@@ -108,28 +113,29 @@ def scan(path, since):
             raw = payload.get("arguments") or payload.get("input") or ""
             raw = raw if isinstance(raw, str) else json.dumps(raw)
             driver = classify(name, raw)
+            # Calls are counted as they happen. Counting them per round-trip
+            # instead would score a batch of eight waits as one supervision
+            # call while the budget counts dispatches one by one.
+            buckets[driver][1] += 1
             pending_task += starts_task(name, raw)
         elif ev.get("type") == "event_msg" and kind == "token_count":
             usage = (payload.get("info") or {}).get("last_token_usage") or {}
-            slot = buckets[driver]
-            slot[0] += usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
-            slot[1] += 1
-            # Tasks are committed on the round-trip that carried them, the same
-            # way polls are. Counting a dispatch whose round-trip never landed
-            # would add to the denominator with no numerator to match it.
+            # Tokens belong to the round-trip, so they land on whichever call
+            # drove it; a round-trip with no preceding call lands in <none>.
+            buckets[driver][0] += usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+            round_trips += 1
             tasks += pending_task
             driver, pending_task = "<none>", 0
-    return (started, buckets, tasks) if buckets else None
+    return (started, buckets, tasks, round_trips) if buckets else None
 
 
-def report(buckets, tasks, label, indent=""):
+def report(buckets, tasks, round_trips, label, indent=""):
     """Print the breakdown; return supervision calls per dispatched task."""
     total = sum(t for t, _ in buckets.values()) or 1
-    calls = sum(c for _, c in buckets.values())
     polls = buckets["POLL"][1]
     # No dispatches but still polling is unbounded waste, not a clean ratio.
     per_task = polls / tasks if tasks else (float("inf") if polls else 0.0)
-    print(f"{indent}{label}: {total/1e6:.1f}M tokens, {calls} round-trips, "
+    print(f"{indent}{label}: {total/1e6:.1f}M tokens, {round_trips} round-trips, "
           f"{polls} polls / {tasks} tasks = {ratio_text(per_task)} per task")
     for name in ("POLL", "WORK", "DISPATCH", "EDIT", "<none>"):
         tok, cnt = buckets[name]
@@ -161,21 +167,22 @@ def main():
         return 0
 
     combined = collections.defaultdict(lambda: [0, 0])
-    tasks = 0
+    tasks = round_trips = 0
     # The budget divides by dispatched tasks, so only sessions that dispatched
     # something are coordinators the rule can apply to. A worker session waits
     # on its own commands and dispatches nothing; judging it would flag normal
     # work as unbounded supervision.
     coordinator_polls = coordinator_tasks = 0
     worst = (0.0, "")
-    for path, (started, buckets, session_tasks) in sorted(found, key=lambda x: x[1][0]):
+    for path, (started, buckets, session_tasks, session_trips) in sorted(found, key=lambda x: x[1][0]):
         for name, (tok, cnt) in buckets.items():
             combined[name][0] += tok
             combined[name][1] += cnt
         tasks += session_tasks
+        round_trips += session_trips
         label = f"{started} {os.path.basename(path)[:40]}"
         if args.sessions:
-            report(buckets, session_tasks, label, indent="  ")
+            report(buckets, session_tasks, session_trips, label, indent="  ")
         if not session_tasks:
             continue
         polls = buckets["POLL"][1]
@@ -184,7 +191,7 @@ def main():
         if polls / session_tasks > worst[0]:
             worst = (polls / session_tasks, label)
     print()
-    report(combined, tasks, f"all sessions since {since}")
+    report(combined, tasks, round_trips, f"all sessions since {since}")
     if not coordinator_tasks:
         print("no session dispatched a task — budget does not apply")
         return 0

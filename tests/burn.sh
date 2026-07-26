@@ -275,6 +275,27 @@ test_two_dispatches_in_one_round_trip_count_twice() {
   esac
 }
 
+test_batched_supervision_calls_each_count() {
+  local root="$TMP_ROOT/batchedpolls" output
+  write_rollout "$root/2026/07/24" 0 1 0
+  # Eight waits before a single token_count. Counting polls per round-trip
+  # while counting tasks per call would score this 1 poll / 1 task and pass,
+  # while the same batching on the dispatch side counts eight.
+  {
+    for _ in 1 2 3 4 5 6 7 8; do
+      printf '{"type":"response_item","payload":{"type":"function_call","name":"wait","arguments":"{\\"cell_id\\":\\"1\\"}"}}\n'
+    done
+    printf '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":9000,"output_tokens":1000}}}}\n'
+  } >>"$root/2026/07/24/rollout-demo.jsonl"
+  if output=$(burn "$root"); then
+    fail "eight batched waits must each count as supervision: $output"
+  fi
+  case $output in
+    *'8 polls / 1 tasks = 8.0 per task'*) ;;
+    *) fail "expected all eight waits counted, got: $output" ;;
+  esac
+}
+
 test_raw_argument_calls_are_classified() {
   local root="$TMP_ROOT/rawargs" output
   write_rollout "$root/2026/07/24" 0 1 0
@@ -329,6 +350,7 @@ test_patch_text_is_edit_not_dispatch
 test_one_bad_session_is_not_hidden_by_quiet_ones
 test_per_session_breakdown_reports_each_session
 test_two_dispatches_in_one_round_trip_count_twice
+test_batched_supervision_calls_each_count
 test_raw_argument_calls_are_classified
 test_write_stdin_counts_as_supervision_only_when_empty
 test_bad_since_is_rejected
