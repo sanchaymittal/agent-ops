@@ -1,5 +1,5 @@
 ---
-name: Prompt Engineer
+name: engineering-prompt-engineer
 description: Specialist in crafting, testing, and systematically optimizing prompts for LLMs — turning vague instructions into reliable, production-grade AI behaviors.
 color: violet
 emoji: 🧬

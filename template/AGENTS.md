@@ -31,7 +31,7 @@ The method is the contract — whichever CLI fills a slot, it works like this:
 - One writer lease per worktree. Preflight the CLI/model/quota, gates, base SHA, verify command, permissions, clean tree, and lease before loading task context: `.orchestration/preflight.sh` checks the local half and `.orchestration/lease.sh acquire --dispatch <id>` takes the lease. A `blocked:` line means do not start.
 - Final-state proof: after the last edit, run the required checks, inspect diff/status, compute the diff SHA, and validate the report with `.orchestration/verify.sh`. A `done` report needs an `Acceptance check` (`run: <command>` or `artifact: <path>`) that matches its prompt, plus the evidence it produced.
 - Report outcome first: `done`, `blocked: missing <item>`, or `blocked: decision: <question>` in the first line, failures quoted verbatim, deviations from the prompt named.
-- Parallel when independent, serial when coupled — never two writers in one worktree.
+- Parallel only across separate worker sessions/worktrees; issue tool calls serially within each session. Serial when coupled — never two writers in one worktree.
 
 ## Task management
 
@@ -49,7 +49,7 @@ Backlog lives in {{TASK_TRACKER_DETAILS}}. **No work without a tracked issue/tas
 
 ## Roster (project-scoped roles)
 
-Same 9 roles in each CLI dir: `.claude/agents/` (Claude), `.codex/agents/` (Codex), `.agents/agents/` (agy), `.opencode/agents/` (OpenCode). CLIs without a native roster dir (e.g. Hermes) load the role file by path from the dispatch prompt.
+Same 9 roles in each CLI dir: `.claude/agents/` (Claude), `.codex/agents/` (Codex), `.agents/agents/` (agy), `.opencode/agents/` (OpenCode). Confirm a CLI actually resolves its roster — run its own agent-list command in the repo — before dispatching with `--agent <role>`. A CLI that resolves nothing (Hermes, and agy in some setups) loads the role file by path or inlined from the dispatch prompt.
 
 | Role | Use for |
 | --- | --- |

@@ -46,7 +46,7 @@ CLAUDE.md -> AGENTS.md # all four CLIs read one file
 docs/
   index.md             # concern router + CAG read protocol
   gates/               # live blocker table (index) + per-gate detail (blockers.md)
-  orchestration/       # dispatch checklist + task tracker + escalation advisor + optional Linear adapter + orca.md
+  orchestration/       # dispatch checklist + task tracker + escalation advisor + optional Linear adapter + supervision.md
   product/ runbooks/ engineering/   # skeleton indexes, fill as the project grows
 .orchestration/        # prompt/report templates + preflight + writer lease + hash/scope verifier + immutable dispatch records
 .claude/agents/ .codex/agents/ .agents/agents/ .opencode/agents/   # same 9 roles each

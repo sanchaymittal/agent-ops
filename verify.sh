@@ -7,11 +7,13 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 
 bash -n "$ROOT/init.sh" "$ROOT/verify.sh" "$ROOT/template/.orchestration/verify.sh" \
   "$ROOT/template/.orchestration/preflight.sh" "$ROOT/template/.orchestration/lease.sh" \
-  "$ROOT/tests/init.sh" "$ROOT/tests/verify-report.sh" "$ROOT/tests/preflight-lease.sh"
+  "$ROOT/tests/init.sh" "$ROOT/tests/verify-report.sh" "$ROOT/tests/preflight-lease.sh" \
+  "$ROOT/tests/burn.sh"
 
 "$ROOT/tests/init.sh"
 "$ROOT/tests/verify-report.sh"
 "$ROOT/tests/preflight-lease.sh"
+"$ROOT/tests/burn.sh"
 
 while IFS= read -r index; do
   lines=$(wc -l <"$index" | tr -d ' ')
@@ -32,6 +34,29 @@ for claude_role in "$ROOT"/template/.claude/agents/*.md; do
     "$ROOT/template/.opencode/agents/$role" >"$TMP_ROOT/opencode-$role"
   cmp -s "$TMP_ROOT/claude-$role" "$TMP_ROOT/opencode-$role" || {
     printf 'role body drift: .claude/agents/%s != .opencode/agents/%s\n' "$role" "$role" >&2
+    exit 1
+  }
+done
+
+# A role is dispatched by the name it declares, so that name must be the slug
+# the docs advertise. Frontmatter drift here silently breaks `--agent <role>`.
+# .agents/ is omitted: the parity check above already proves it byte-identical
+# to .claude/. Only the first frontmatter block counts — a `name:` in the body
+# is prose, not a declaration.
+for role_file in "$ROOT"/template/.claude/agents/*.md "$ROOT"/template/.opencode/agents/*.md; do
+  slug=$(basename "$role_file" .md)
+  declared=$(awk '/^---$/ { block++; next } block == 1 && /^name: / { sub(/^name: /, ""); print; exit }' "$role_file")
+  [ "$declared" = "$slug" ] || {
+    printf 'roster name drift: %s declares %s\n' "${role_file#"$ROOT"/}" "${declared:-<none>}" >&2
+    exit 1
+  }
+done
+
+for role_file in "$ROOT"/template/.codex/agents/*.toml; do
+  slug=$(basename "$role_file" .toml)
+  declared=$(awk -F'"' '/^name = /{print $2; exit}' "$role_file")
+  [ "$declared" = "$slug" ] || {
+    printf 'roster name drift: %s declares %s\n' "${role_file#"$ROOT"/}" "${declared:-<none>}" >&2
     exit 1
   }
 done
