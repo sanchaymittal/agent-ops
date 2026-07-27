@@ -3,9 +3,16 @@
 
 Reads Codex rollout logs (~/.codex/sessions/**/*.jsonl) and attributes every API
 round-trip to the tool call that drove it -- a round-trip with no preceding
-call lands in <none>. Enforces the rule in
+call lands in <none>. Enforces two rules from
 docs/orchestration/supervision.md: at most 2 supervision calls per dispatched
-task. The token shares it also prints are context, not the budget.
+task, and no supervision wait shorter than 15 minutes. The token shares it also
+prints are context, not the budget.
+
+The second rule is not implied by the first. A coordinator can call the right
+blocking primitive and still poll with it: `check --wait --timeout-ms 60000`
+against a worker that runs 15-60 minutes wakes the coordinator ~30 times and
+re-sends its whole context each time. Counted per call the two are
+indistinguishable, so the declared window is read separately.
 
     python3 .orchestration/burn.py                # last 7 days
     python3 .orchestration/burn.py --since 2026-07-22 --sessions
@@ -56,6 +63,28 @@ TASK_START = re.compile("|".join((
 POLL_TOOLS = {"wait", "wait_agent"}
 DISPATCH_TOOLS = {"send_message", "spawn_agent", "followup_task"}
 TASK_START_TOOLS = {"spawn_agent"}
+
+# `--timeout-ms` is orca's own flag, so a number following it on a supervision
+# command is always a wait window. `yield_time_ms` is read only from the tools
+# whose whole purpose is to wait: `exec`/`exec_command` carry one too, but there
+# it is how long a shell call parks before returning output, and reading it
+# would score every ordinary command as a short wait. On the day this rule was
+# written that one confusion would have added 329 false windows to 68 real ones.
+TIMEOUT_FLAG = re.compile(r"--timeout-ms[=\s]+(\d+)")
+YIELD_TOOLS = {"wait", "wait_agent", "write_stdin"}
+
+
+def wait_windows(name, args):
+    """-> [ms, ...] every wait window a supervision call declares."""
+    windows = [int(m.group(1)) for m in TIMEOUT_FLAG.finditer(args)]
+    if name in YIELD_TOOLS:
+        try:
+            declared = json.loads(args).get("yield_time_ms")
+        except (ValueError, AttributeError):
+            declared = None
+        if isinstance(declared, int):
+            windows.append(declared)
+    return windows
 
 
 def classify(name, args):
@@ -109,7 +138,9 @@ def agent_path(meta):
 
 
 def scan(path, since):
-    """-> (started, {bucket: [tokens, calls]}, tasks, round_trips, agent) or None."""
+    """-> (started, {bucket: [tokens, calls]}, tasks, round_trips, agent, windows)
+    or None, where windows are the wait windows in ms that supervision calls
+    declared."""
     try:
         lines = open(path, encoding="utf-8", errors="replace").readlines()
         head = json.loads(lines[0])
@@ -124,6 +155,7 @@ def scan(path, since):
     tasks = round_trips = 0
     driver = "<none>"
     pending_task = 0
+    windows = []
     for line in lines:
         try:
             ev = json.loads(line)
@@ -141,6 +173,10 @@ def scan(path, since):
             # call while the budget counts dispatches one by one.
             buckets[driver][1] += 1
             pending_task += starts_task(name, raw)
+            # Only a supervision call declares a supervision window. The same
+            # flag on a dispatch bounds how long that dispatch may take.
+            if driver == "POLL":
+                windows += wait_windows(name, raw)
         elif ev.get("type") == "event_msg" and kind == "token_count":
             usage = (payload.get("info") or {}).get("last_token_usage") or {}
             # Tokens belong to the round-trip, so they land on whichever call
@@ -149,10 +185,10 @@ def scan(path, since):
             round_trips += 1
             tasks += pending_task
             driver, pending_task = "<none>", 0
-    return (started, buckets, tasks, round_trips, agent) if buckets else None
+    return (started, buckets, tasks, round_trips, agent, windows) if buckets else None
 
 
-def report(buckets, tasks, round_trips, label, indent=""):
+def report(buckets, tasks, round_trips, label, windows, min_wait_ms, indent=""):
     """Print the breakdown. `tasks=None` omits the ratio, for a view that spans
     sessions of different roles: pooling one session's polls against another's
     dispatches produces a number that means nothing next to the enforced one."""
@@ -170,6 +206,10 @@ def report(buckets, tasks, round_trips, label, indent=""):
         tok, cnt = buckets[name]
         if tok:
             print(f"{indent}  {name:9} {cnt:5} calls {tok/1e6:7.1f}M {100*tok/total:5.1f}%")
+    short = [w for w in windows if w < min_wait_ms]
+    if short:
+        print(f"{indent}  {len(short)} of {len(windows)} declared wait windows under "
+              f"{min_wait_ms // 60000}m, shortest {min(short) / 1000:.0f}s")
     return per_task
 
 
@@ -180,6 +220,8 @@ def main():
     ap.add_argument("--root", default="~/.codex/sessions", help="rollout log directory")
     ap.add_argument("--max-polls-per-task", type=float, default=2.0,
                     help="supervision budget from docs/orchestration/supervision.md")
+    ap.add_argument("--min-wait-ms", type=int, default=900_000,
+                    help="shortest supervision wait the same file allows (15 minutes)")
     args = ap.parse_args()
     since = args.since or str(datetime.date.today() - datetime.timedelta(days=7))
     try:
@@ -203,17 +245,27 @@ def main():
     # work as unbounded supervision.
     coordinator_polls = coordinator_tasks = 0
     worst = (0.0, "")
-    for path, (started, buckets, session_tasks, session_trips, agent) in sorted(found, key=lambda x: x[1][0]):
+    all_windows = []
+    # The window rule is about a single call, not a rate, so unlike the ratio it
+    # applies to any session that supervises -- a worker waiting on its own
+    # children is subject to it too.
+    shortest = (None, "")
+    for path, (started, buckets, session_tasks, session_trips, agent, windows) in sorted(found, key=lambda x: x[1][0]):
         for name, (tok, cnt) in buckets.items():
             combined[name][0] += tok
             combined[name][1] += cnt
         tasks += session_tasks
         round_trips += session_trips
+        all_windows += windows
         label = f"{started} {os.path.basename(path)[:40]}"
         if agent:
             label += f" (subagent {agent})"
         if args.sessions:
-            report(buckets, session_tasks, session_trips, label, indent="  ")
+            report(buckets, session_tasks, session_trips, label, windows, args.min_wait_ms,
+                   indent="  ")
+        short = [w for w in windows if w < args.min_wait_ms]
+        if short and (shortest[0] is None or min(short) < shortest[0]):
+            shortest = (min(short), label)
         if not session_tasks:
             continue
         polls = buckets["POLL"][1]
@@ -222,10 +274,24 @@ def main():
         if polls / session_tasks > worst[0]:
             worst = (polls / session_tasks, label)
     print()
-    report(combined, None, round_trips, f"all sessions since {since}")
+    report(combined, None, round_trips, f"all sessions since {since}", all_windows,
+           args.min_wait_ms)
+
+    # Both rules are reported before either exits, so one breach never hides
+    # the other.
+    failed = False
+    if shortest[0] is not None:
+        short = sum(1 for w in all_windows if w < args.min_wait_ms)
+        print(f"\nwindow too short: {short} of {len(all_windows)} supervision waits ran under "
+              f"{args.min_wait_ms // 60000} minutes, down to {shortest[0] / 1000:.0f}s — "
+              f"{shortest[1]}. A short window makes the right primitive poll: the wait returns, "
+              f"nothing has finished, and the whole context is re-sent to wait again. See "
+              f"docs/orchestration/supervision.md#supervise.")
+        failed = True
+
     if not coordinator_tasks:
-        print("no session dispatched a task — budget does not apply")
-        return 0
+        print("no session dispatched a task — the per-task budget does not apply")
+        return 1 if failed else 0
 
     # The rule is per dispatch, so a pooled average is not enough: one runaway
     # coordinator is exactly what an average over many quiet sessions hides.
@@ -239,8 +305,8 @@ def main():
               f"> {args.max_polls_per_task:.0f}. Wait wider — one blocking wait covering every "
               f"outstanding worker, window >= 15 minutes. See "
               f"docs/orchestration/supervision.md#supervise.")
-        return 1
-    return 0
+        failed = True
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
