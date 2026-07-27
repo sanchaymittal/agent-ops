@@ -14,7 +14,9 @@ fail() {
 # Round-trip shapes taken from real rollouts under ~/.codex/sessions: a shell
 # command is `exec_command` carrying a `cmd` string (not an argv array), and a
 # blocking wait is the `wait` tool. Every round-trip is 10k tokens, so token
-# share stays fixed and only the supervision ratio moves.
+# share stays fixed and only the supervision ratio moves. Waits here declare a
+# compliant 15-minute window so that the ratio tests below fail on the ratio
+# alone; the window rule has its own fixtures.
 turn() { # $1 = tool name, $2 = arguments JSON (already escaped for the log)
   printf '{"type":"response_item","payload":{"type":"function_call","name":"%s","arguments":"%s"}}\n' "$1" "$2"
   printf '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":9000,"output_tokens":1000}}}}\n'
@@ -35,7 +37,7 @@ write_rollout() {
       shell_turn "orca orchestration dispatch --task t$i --inject"
     done
     for ((i = 0; i < polls; i++)); do
-      turn wait '{\"cell_id\":\"1\",\"yield_time_ms\":30000,\"max_tokens\":5000}'
+      turn wait '{\"cell_id\":\"1\",\"yield_time_ms\":900000,\"max_tokens\":5000}'
     done
     for ((i = 0; i < work; i++)); do
       shell_turn "pytest -q"
@@ -95,7 +97,7 @@ test_a_session_that_dispatched_nothing_is_not_judged() {
     *) fail "expected an undefined ratio, got: $output" ;;
   esac
   case $output in
-    *'no session dispatched a task — budget does not apply'*) ;;
+    *'no session dispatched a task — the per-task budget does not apply'*) ;;
     *) fail "expected the budget to be declared inapplicable, got: $output" ;;
   esac
 }
@@ -406,6 +408,117 @@ test_only_thread_source_makes_a_session_a_subagent() {
   esac
 }
 
+test_a_short_wait_window_is_a_breach() {
+  local root="$TMP_ROOT/shortwait" output
+  # Two supervision calls over one dispatch is within the ratio budget, so this
+  # can only fail on the window. A 60s `check --wait` against a worker that runs
+  # 15-60 minutes is the right primitive used as a poll loop.
+  write_rollout "$root/2026/07/24" 0 1 0
+  {
+    shell_turn "orca orchestration check --wait --types worker_done --timeout-ms 60000 --json"
+    shell_turn "orca orchestration check --wait --types worker_done --timeout-ms 900000 --json"
+  } >>"$root/2026/07/24/rollout-demo.jsonl"
+  if output=$(burn "$root"); then
+    fail "a 60s supervision window must fail: $output"
+  fi
+  case $output in
+    *'window too short: worst is 1 under 15 minutes'*) ;;
+    *) fail "expected the short window named with its floor, got: $output" ;;
+  esac
+  case $output in
+    *'1 of 2 declared wait windows under 15m, shortest 60s'*) ;;
+    *) fail "expected the per-session window line, got: $output" ;;
+  esac
+  # Same log, floor lowered below the window: the ratio alone must pass it.
+  burn "$root" --min-wait-ms 60000 >/dev/null ||
+    fail "a 60s window must pass an explicit 60s floor"
+}
+
+test_a_shell_yield_is_not_a_supervision_window() {
+  local root="$TMP_ROOT/shellyield" output
+  # `exec_command` carries `yield_time_ms` on every call -- how long the shell
+  # parks before returning output, not how long the coordinator means to sleep.
+  # `shell_turn` sets it to 10s, so reading it here would fail every fixture in
+  # this file on a rule none of them are testing.
+  write_rollout "$root/2026/07/24" 0 1 0
+  shell_turn "orca terminal read --terminal t1 --json" >>"$root/2026/07/24/rollout-demo.jsonl"
+  output=$(burn "$root") || fail "a shell yield must not count as a wait window: $output"
+  case $output in
+    *'window too short'*) fail "a shell yield must not trip the window rule: $output" ;;
+  esac
+}
+
+test_a_timeout_on_a_dispatch_is_not_a_supervision_window() {
+  local root="$TMP_ROOT/dispatchtimeout" output
+  # The same flag on a dispatch bounds how long that dispatch may take, which
+  # is not a statement about how long the coordinator will sleep. Reading it
+  # would fail a coordinator that never polled at all.
+  write_rollout "$root/2026/07/24" 0 0 0
+  shell_turn "orca orchestration dispatch --task t1 --to h1 --timeout-ms 60000 --json" \
+    >>"$root/2026/07/24/rollout-demo.jsonl"
+  output=$(burn "$root") || fail "a dispatch timeout must not be a wait window: $output"
+  case $output in
+    *'window too short'*) fail "a dispatch timeout must not trip the window rule: $output" ;;
+  esac
+}
+
+test_a_tool_level_yield_is_never_a_supervision_window() {
+  local root="$TMP_ROOT/toolyield" output
+  # `wait` and `write_stdin` carry `yield_time_ms`, and so does every ordinary
+  # `exec_command`. It is the same field with the same meaning in all three --
+  # how long the call parks before returning output so far -- so none of them
+  # declare a supervision window. Only orca's own flag does.
+  write_rollout "$root/2026/07/24" 0 0 0
+  {
+    turn wait '{\"cell_id\":\"1\",\"yield_time_ms\":30000}'
+    turn write_stdin '{\"chars\":\"\",\"session_id\":\"s1\",\"yield_time_ms\":30000}'
+  } >>"$root/2026/07/24/rollout-demo.jsonl"
+  output=$(burn "$root") || fail "a tool-level yield must not be a wait window: $output"
+  case $output in
+    *'window too short'*) fail "a tool yield must not trip the window rule: $output" ;;
+  esac
+}
+
+test_the_window_rule_applies_without_any_dispatch() {
+  local root="$TMP_ROOT/windownodispatch" output
+  # The per-task ratio needs a denominator; a single call's window does not.
+  # A session that only ever waited, badly, must still be caught.
+  write_rollout "$root/2026/07/24" 0 0 0
+  shell_turn "orca orchestration check --wait --types worker_done --timeout-ms 30000 --json" \
+    >>"$root/2026/07/24/rollout-demo.jsonl"
+  if output=$(burn "$root"); then
+    fail "a 30s window with no dispatch must still fail: $output"
+  fi
+  case $output in
+    *'shortest 30s'*) ;;
+    *) fail "expected the 30s window reported, got: $output" ;;
+  esac
+  case $output in
+    *'the per-task budget does not apply'*) ;;
+    *) fail "the ratio must still be declared inapplicable, got: $output" ;;
+  esac
+}
+
+test_both_breaches_are_reported_together() {
+  local root="$TMP_ROOT/bothrules" output
+  write_rollout "$root/2026/07/24" 9 3 0   # 3.0 per task: over the ratio budget
+  shell_turn "orca orchestration check --wait --types worker_done --timeout-ms 30000 --json" \
+    >>"$root/2026/07/24/rollout-demo.jsonl"
+  if output=$(burn "$root"); then
+    fail "both rules breached must fail: $output"
+  fi
+  # Exiting on the first breach would hide the second, and they have different
+  # fixes: one is how often to wake, the other how long to sleep.
+  case $output in
+    *'window too short'*) ;;
+    *) fail "expected the window breach, got: $output" ;;
+  esac
+  case $output in
+    *'over budget: 3.3'*) ;;
+    *) fail "expected the ratio breach alongside it, got: $output" ;;
+  esac
+}
+
 test_bad_since_is_rejected() {
   local root="$TMP_ROOT/since" status=0
   write_rollout "$root/2026/07/24" 0 1 0
@@ -434,6 +547,12 @@ test_write_stdin_counts_as_supervision_only_when_empty
 test_the_role_mixed_total_shows_no_ratio
 test_a_subagent_session_is_labelled_as_one
 test_only_thread_source_makes_a_session_a_subagent
+test_a_short_wait_window_is_a_breach
+test_a_shell_yield_is_not_a_supervision_window
+test_a_timeout_on_a_dispatch_is_not_a_supervision_window
+test_a_tool_level_yield_is_never_a_supervision_window
+test_the_window_rule_applies_without_any_dispatch
+test_both_breaches_are_reported_together
 test_bad_since_is_rejected
 
 printf 'PASS: supervision-cost meter\n'
