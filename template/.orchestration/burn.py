@@ -130,13 +130,19 @@ def scan(path, since):
 
 
 def report(buckets, tasks, round_trips, label, indent=""):
-    """Print the breakdown; return supervision calls per dispatched task."""
+    """Print the breakdown. `tasks=None` omits the ratio, for a view that spans
+    sessions of different roles: pooling one session's polls against another's
+    dispatches produces a number that means nothing next to the enforced one."""
     total = sum(t for t, _ in buckets.values()) or 1
     polls = buckets["POLL"][1]
-    # No dispatches but still polling is unbounded waste, not a clean ratio.
-    per_task = polls / tasks if tasks else (float("inf") if polls else 0.0)
-    print(f"{indent}{label}: {total/1e6:.1f}M tokens, {round_trips} round-trips, "
-          f"{polls} polls / {tasks} tasks = {ratio_text(per_task)} per task")
+    head = f"{indent}{label}: {total/1e6:.1f}M tokens, {round_trips} round-trips"
+    if tasks is None:
+        per_task = None
+        print(head)
+    else:
+        # No dispatches but still polling is unbounded waste, not a clean ratio.
+        per_task = polls / tasks if tasks else (float("inf") if polls else 0.0)
+        print(f"{head}, {polls} polls / {tasks} tasks = {ratio_text(per_task)} per task")
     for name in ("POLL", "WORK", "DISPATCH", "EDIT", "<none>"):
         tok, cnt = buckets[name]
         if tok:
@@ -191,7 +197,7 @@ def main():
         if polls / session_tasks > worst[0]:
             worst = (polls / session_tasks, label)
     print()
-    report(combined, tasks, round_trips, f"all sessions since {since}")
+    report(combined, None, round_trips, f"all sessions since {since}")
     if not coordinator_tasks:
         print("no session dispatched a task — budget does not apply")
         return 0

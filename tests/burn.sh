@@ -89,7 +89,7 @@ test_a_session_that_dispatched_nothing_is_not_judged() {
   # A worker session waits on its own commands and dispatches nothing. The
   # budget divides by dispatched tasks, so the rule cannot apply to it.
   write_rollout "$root/2026/07/24" 4 0 1
-  output=$(burn "$root") || fail "a session with no dispatches must not be judged: $output"
+  output=$(burn "$root" --sessions) || fail "a session with no dispatches must not be judged: $output"
   case $output in
     *'4 polls / 0 tasks = n/a per task'*) ;;
     *) fail "expected an undefined ratio, got: $output" ;;
@@ -197,7 +197,7 @@ test_read_only_subcommands_count_as_supervision() {
 test_an_undefined_ratio_never_prints_as_inf() {
   local root="$TMP_ROOT/undefined" output
   write_rollout "$root/2026/07/24" 3 0 0
-  output=$(burn "$root" 2>&1) || true
+  output=$(burn "$root" --sessions 2>&1) || true
   case $output in
     *'= inf per task'* | *'over budget: inf'*)
       fail "an undefined ratio must render as n/a, not inf: $output" ;;
@@ -246,7 +246,10 @@ test_one_bad_session_is_not_hidden_by_quiet_ones() {
 }
 
 test_per_session_breakdown_reports_each_session() {
-  local root="$TMP_ROOT/mixed" output
+  local root="$TMP_ROOT/breakdown" output
+  write_rollout "$root/2026/07/24" 0 20 0
+  mv "$root/2026/07/24/rollout-demo.jsonl" "$root/2026/07/24/rollout-quiet.jsonl"
+  write_rollout "$root/2026/07/25" 9 1 0
   output=$(burn "$root" --sessions) || true
   case $output in
     *rollout-quiet.jsonl*) ;;
@@ -329,8 +332,29 @@ test_write_stdin_counts_as_supervision_only_when_empty() {
   esac
 }
 
+test_the_role_mixed_total_shows_no_ratio() {
+  local root="$TMP_ROOT/rolemixed" output
+  write_rollout "$root/2026/07/24" 6 2 0    # coordinator: 3.0 per task
+  mv "$root/2026/07/24/rollout-demo.jsonl" "$root/2026/07/24/rollout-coord.jsonl"
+  write_rollout "$root/2026/07/25" 20 0 0   # worker: polls, dispatches nothing
+  # Pooling the worker's polls against the coordinator's dispatches would print
+  # 26 polls / 2 tasks = 13.0 right above the 3.0 that is actually enforced.
+  if output=$(burn "$root"); then
+    fail "3.0 per task must fail the budget: $output"
+  fi
+  case $output in
+    *'26 polls'* | *'= 13.0 per task'*)
+      fail "the role-mixed total must not print a ratio: $output" ;;
+  esac
+  case $output in
+    *'coordinator sessions: 6 polls / 2 tasks = 3.0 per task'*) ;;
+    *) fail "expected the coordinator ratio, got: $output" ;;
+  esac
+}
+
 test_bad_since_is_rejected() {
-  local root="$TMP_ROOT/ratio" status=0
+  local root="$TMP_ROOT/since" status=0
+  write_rollout "$root/2026/07/24" 0 1 0
   python3 "$BURN" --root "$root" --since 07-24-2026 >/dev/null 2>&1 || status=$?
   [ "$status" -eq 2 ] || fail "a malformed --since must exit 2, got $status"
 }
@@ -353,6 +377,7 @@ test_two_dispatches_in_one_round_trip_count_twice
 test_batched_supervision_calls_each_count
 test_raw_argument_calls_are_classified
 test_write_stdin_counts_as_supervision_only_when_empty
+test_the_role_mixed_total_shows_no_ratio
 test_bad_since_is_rejected
 
 printf 'PASS: supervision-cost meter\n'
