@@ -352,6 +352,60 @@ test_the_role_mixed_total_shows_no_ratio() {
   esac
 }
 
+# A session log whose header carries $2 as its `thread_source` and $3 as the
+# JSON value of `source`, then one round-trip of ordinary work.
+write_thread() { # $1 = file, $2 = thread_source, $3 = source JSON value
+  mkdir -p "$(dirname "$1")"
+  {
+    printf '{"type":"session_meta","payload":{"timestamp":"2026-07-25T01:00:00.000Z","cwd":"/demo","thread_source":"%s","source":%s}}\n' "$2" "$3"
+    shell_turn "pytest -q"
+  } >"$1"
+}
+
+test_a_subagent_session_is_labelled_as_one() {
+  local root="$TMP_ROOT/subagent" output
+  write_rollout "$root/2026/07/24" 2 1 0
+  # Header shape taken from a real forked thread: `source` is an object naming
+  # the spawning thread, where a user-started session carries the bare string
+  # "cli". Unlabelled, one worker's reviewers are indistinguishable from that
+  # many separate sessions in the per-session listing.
+  write_thread "$root/2026/07/25/rollout-fork.jsonl" subagent \
+    '{"subagent":{"thread_spawn":{"parent_thread_id":"p1","depth":1,"agent_path":"/root/standards_review"}}}'
+  output=$(burn "$root" --sessions) || fail "2 polls / 1 task is within budget: $output"
+  case $output in
+    *'rollout-fork.jsonl (subagent /root/standards_review)'*) ;;
+    *) fail "a forked thread must be labelled with its agent path, got: $output" ;;
+  esac
+  case $output in
+    *'rollout-demo.jsonl:'*) ;;
+    *) fail "a user-started session must carry no subagent label, got: $output" ;;
+  esac
+  case $output in
+    *'rollout-demo.jsonl (subagent'*)
+      fail "a user-started session must not be labelled a subagent: $output" ;;
+  esac
+}
+
+test_only_thread_source_makes_a_session_a_subagent() {
+  local root="$TMP_ROOT/threadsource" output
+  # An object-shaped `source` on a user-started thread. Keying off the shape
+  # rather than `thread_source` labels every object a later CLI version puts
+  # here as a subagent; only the second file below is one.
+  write_thread "$root/2026/07/24/rollout-objsource.jsonl" user '{"resume":{"path":"/tmp/x"}}'
+  # A spawned thread with no `thread_spawn` block, as a guardian arrives. It is
+  # still a subagent; it just has no path to name.
+  write_thread "$root/2026/07/25/rollout-guardian.jsonl" subagent '{"subagent":{"other":"guardian"}}'
+  output=$(burn "$root" --sessions) || fail "no dispatches, no budget to breach: $output"
+  case $output in
+    *'rollout-objsource.jsonl (subagent'*)
+      fail "an object source alone must not mark a subagent: $output" ;;
+  esac
+  case $output in
+    *'rollout-guardian.jsonl (subagent unnamed)'*) ;;
+    *) fail "a spawned thread with no agent path must still be labelled, got: $output" ;;
+  esac
+}
+
 test_bad_since_is_rejected() {
   local root="$TMP_ROOT/since" status=0
   write_rollout "$root/2026/07/24" 0 1 0
@@ -378,6 +432,8 @@ test_batched_supervision_calls_each_count
 test_raw_argument_calls_are_classified
 test_write_stdin_counts_as_supervision_only_when_empty
 test_the_role_mixed_total_shows_no_ratio
+test_a_subagent_session_is_labelled_as_one
+test_only_thread_source_makes_a_session_a_subagent
 test_bad_since_is_rejected
 
 printf 'PASS: supervision-cost meter\n'
