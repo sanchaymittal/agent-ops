@@ -61,5 +61,22 @@ for role_file in "$ROOT"/template/.codex/agents/*.toml; do
   }
 done
 
+# A window literal in shipped text is copied and generalized to every wait,
+# regardless of the prose around it -- that is how a measured coordinator ended
+# up polling at 60s against 15-60 minute tasks. Prose can restate the floor;
+# only a check keeps a shorter number from being shipped next to it. burn.py is
+# exempt: it is the file that defines the floor and tests numbers below it.
+# Scoped to the shipped payload. This repo's own prompts/ and reports/ are
+# immutable dispatch history: the handoff that diagnosed this failure quotes
+# the 60s literal as evidence, and rewriting history to satisfy a lint is a
+# worse trade than leaving the past on record.
+bad_windows=$(grep -rnoE --binary-files=without-match -- '--timeout-ms[= ]+[0-9]+' "$ROOT/template" 2>/dev/null \
+  | grep -v -e '/burn\.py:' -e '/__pycache__/' \
+  | awk -F'[= ]' '{ n = $NF + 0; if (n < 900000) print }') || true
+[ -z "$bad_windows" ] || {
+  printf 'supervision window below the 15-minute floor in shipped text:\n%s\n' "$bad_windows" >&2
+  exit 1
+}
+
 git -C "$ROOT" diff --check
 printf 'PASS: repository verification\n'
