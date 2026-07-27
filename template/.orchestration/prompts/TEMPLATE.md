@@ -39,25 +39,23 @@ checkpoint: re-wait at the same window.
 
 Prefer a path where the wait happens **outside** the model loop. Wall clock is
 free; wall clock held open inside a tool call is not — every wake re-sends the
-whole context. On Orca that path is the runtime's own coordinator loop, which
-returns immediately and polls inside the runtime for zero model tokens:
+whole context. A runtime-side loop that polls in its own process costs nothing
+per iteration: cheap polling belongs in the runtime, not the model.
+
+Check whether your substrate has one **and prove it dispatches** before relying
+on it. Orca advertises `orca orchestration run --spec ... --poll-interval-ms
+<n>`, which returns a run ID immediately — but on the environment this was
+written against it created no task, sent no message, and left the worker idle,
+across two attempts with and without `--from`. It stops cleanly, so the run
+registers; it just does no work. Treat any such primitive as unverified until
+you have watched a task reach `completed` through it:
 
 ```sh
-orca orchestration run --spec "<goal>" --poll-interval-ms 30000 --max-concurrent 3 --json
-# returns a run ID immediately; check progress when you have a reason to:
-orca orchestration task-list --brief --json
+# proof-of-life before trusting a runtime loop with a real dispatch
+orca orchestration task-list --json   # a new task must appear within a poll interval or two
 ```
 
-A 30s poll interval is correct *here* and wrong in a model turn: this loop runs
-in the Orca process and costs nothing per iteration. That is the whole
-distinction — cheap polling belongs in the runtime, not the model.
-
-Measured: across the corpus `orca orchestration run` was invoked twice, both
-times as `--help`. Two coordinators read what it did and hand-rolled the loop
-anyway, at 43% of all tokens burned. If a primitive is only described and never
-shown, it does not get used.
-
-If the substrate offers no such path, block in as few calls as possible:
+Until then, block in as few calls as possible:
 
 ```sh
 # Two numbers, and the smaller one is the rule. The window below is the

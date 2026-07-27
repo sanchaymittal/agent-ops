@@ -272,6 +272,37 @@ honour. A 15-minute floor here would fail every session unconditionally and
 stop being a signal. 15 minutes remains the rule for the off-loop path, where
 nothing caps it.
 
+### Tested: the off-loop primitive does not work here
+
+The largest projected saving assumed Orca's runtime coordinator loop worked.
+It was tried directly on 2026-07-27 and it does not.
+
+| | result |
+| --- | --- |
+| `orca orchestration run` returns immediately | yes — 0.31s, `run_b3ecf0b7c5d2` |
+| run registers and stops cleanly | yes — `run-stop` → `stopped: true` |
+| tasks created | **0**, over 5 minutes at a 30s poll interval |
+| messages sent | **0** — latest inbox entry was from the previous day |
+| worker dispatched | **no** — a healthy idle codex sat at its prompt |
+
+Retried with an explicit `--from <coordinator handle>`, since this project runs
+outside Orca and has no `ORCA_TERMINAL_HANDLE`. Same result: zero tasks over
+five polls at a 15s interval.
+
+So the number "most of the 52.6M POLL" is **unsupported**, and the two
+remaining levers — per-worker reads and the harness yield — are the only ones
+with evidence behind them.
+
+This may also explain the corpus. `orchestration run` was invoked twice ever,
+both times as `--help`. The reading that a coordinator "read what it did and
+hand-rolled the loop anyway" assumed the primitive worked. It is at least as
+likely that whoever read the help tried it, got the same silence, and went
+back to what dispatches.
+
+The rule text was corrected before merge: prefer a runtime loop, **but prove it
+dispatches** — require a task reaching `completed` through it before adopting
+it. A runtime loop that does nothing is worse than a poll loop that works.
+
 ### The second-order lever: a late poll costs twice an early one
 
 `019f9dfd`, cost per round-trip by quartile of session life:
