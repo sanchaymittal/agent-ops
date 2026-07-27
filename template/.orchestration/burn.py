@@ -1,42 +1,79 @@
 #!/usr/bin/env python3
 """Supervision-cost meter: what a coordinator spent watching vs doing.
 
-Reads Codex rollout logs (~/.codex/sessions/**/*.jsonl) and attributes every API
+Reads Codex rollout logs (~/.codex/sessions/**/*.jsonl) and Claude Code
+transcripts (~/.claude/projects/**/*.jsonl), and attributes every API
 round-trip to the tool call that drove it -- a round-trip with no preceding
 call lands in <none>. Enforces two rules from
 docs/orchestration/supervision.md: at most 2 supervision calls per dispatched
-task, and no supervision wait shorter than 15 minutes. The token shares it also
+task, and no supervision wait shorter than the floor. The token shares it also
 prints are context, not the budget.
 
 The second rule is not implied by the first. A coordinator can call the right
-blocking primitive and still poll with it: `check --wait --timeout-ms 60000`
-against a worker that runs 15-60 minutes wakes the coordinator ~30 times and
-re-sends its whole context each time. Counted per call the two are
-indistinguishable, so the declared window is read separately.
+blocking primitive and still poll with it: a one-minute wait against a worker
+that runs 15-60 minutes wakes the coordinator ~30 times and re-sends its whole
+context each time. Counted per call the two are indistinguishable, so the
+window is read separately -- and read as the *effective* window, the smallest
+of every bound the call declares, since the coordinator wakes when the first
+one expires. See the comment on `wait_window`: a measured coordinator asked
+for 60s and got 30s, because the harness yield outranked the flag.
+
+Wall-clock time is not the cost. Wall-clock time held open inside a tool call
+is: every wake re-sends the whole context. A coordinator that waits an hour in
+one call is cheaper than one that waits a minute sixty times, and a
+coordinator that waits off the model loop entirely -- ending its turn and
+being re-invoked on the completion event -- pays nothing at all for the
+waiting.
 
     python3 .orchestration/burn.py                # last 7 days
     python3 .orchestration/burn.py --since 2026-07-22 --sessions
 
 Scope limits, so the numbers are not read for more than they are:
-  - Codex rollout logs only. A coordinator running on another CLI is invisible
-    here; point --root at that CLI's logs only if they share this schema.
-  - EDIT counts the `apply_patch` tool. A patch applied through a shell command
-    lands in WORK, so EDIT is a floor on real editing, not a measurement of it.
-  - A subagent thread forks its parent, so its log opens with the parent's
-    history replayed. `--sessions` labels those threads with their agent path,
-    which is a label and nothing more: their tokens are real spend and stay in
-    every total, and a fork that dispatches is still judged as a coordinator.
+  - Two schemas, detected per file: Codex rollout logs and Claude Code
+    transcripts. A coordinator on any other CLI is invisible here; point --root
+    at that CLI's logs only if they share one of these schemas.
+  - EDIT counts the tool that edits (`apply_patch`, `Edit`/`Write`). A patch
+    applied through a shell command lands in WORK, so EDIT is a floor on real
+    editing, not a measurement of it.
+  - A Codex subagent thread forks its parent, so its log opens with the
+    parent's history replayed. `--sessions` labels those threads with their
+    agent path, which is a label and nothing more: their tokens are real spend
+    and stay in every total, and a fork that dispatches is still judged as a
+    coordinator. Claude Code subagents write their own transcript under
+    `<session>/subagents/` with no replay, so their tokens are already
+    separate; they are labelled from the sibling `.meta.json`.
 """
 import argparse, collections, datetime, glob, json, os, re, sys
 
-# These match raw command text, so both ends need anchoring. A bare `spawn`
-# counts `grep -rn spawn docs/` as dispatched work; a trailing \b counts the
-# read-only `dispatch-show` as a dispatch, because \b matches before a hyphen.
-# Either one inflates the denominator the budget divides by and turns a
-# violation into a pass, so subcommands are listed exactly and (?![\w-]) stops
-# a prefix from matching its own longer siblings.
+# These match raw command text, so all three ends need anchoring. A bare
+# `spawn` counts `grep -rn spawn docs/` as dispatched work; a trailing \b
+# counts the read-only `dispatch-show` as a dispatch, because \b matches
+# before a hyphen. Either one inflates the denominator the budget divides by
+# and turns a violation into a pass, so subcommands are listed exactly and
+# (?![\w-]) stops a prefix from matching its own longer siblings.
+#
+# The leading `orca` is the third anchor, and it is the load-bearing one for
+# any session that works *on* orchestration rather than *doing* it. A tool
+# call's arguments are one blob: a commit message, a PR body, a heredoc'd
+# analysis script, or a grep pattern all sit in the same field as the command.
+# Without the CLI name, `git commit -m "...polling (orchestration check)..."`
+# is a supervision call. Measured on the sessions that built this meter, that
+# was 22 of 48 classified polls -- the meter reported its own authorship as
+# supervision. Every real supervision call names the CLI, so requiring it
+# costs nothing.
+#
+# ponytail: text-level, so prose that quotes a whole command ("run `orca
+# terminal read ...`") still counts. Nothing in the log distinguishes a command
+# from a quotation of one; closing that needs a field the log does not carry.
+#
+# The same literal requirement misses shell indirection -- `cli=orca; "$cli"
+# orchestration dispatch ...` scores as WORK, which deflates the denominator
+# and can turn a breach into a pass. Left as-is deliberately: indirection
+# appears zero times in the measured corpus, while dropping the anchor
+# reintroduces 22 false polls out of 48. Measured harm beats hypothetical
+# harm. Revisit if a coordinator ever invokes the CLI through a variable.
 def _subcommands(group, *names):
-    return rf"\b{group}\s+(?:{'|'.join(names)})(?![\w-])"
+    return rf"\borca\s+{group}\s+(?:{'|'.join(names)})(?![\w-])"
 
 
 # Subcommand lists come from `orca orchestration --help` and `orca terminal
@@ -60,33 +97,79 @@ TASK_START = re.compile("|".join((
     _subcommands("orchestration", "dispatch", "task-create"),
     _subcommands("terminal", "create"),
 )), re.I)
-POLL_TOOLS = {"wait", "wait_agent"}
-DISPATCH_TOOLS = {"send_message", "spawn_agent", "followup_task"}
-TASK_START_TOOLS = {"spawn_agent"}
+# Tool names from both CLIs in one set each: the two vocabularies do not
+# collide, and the command-text patterns above are substrate-independent -- a
+# coordinator shells out to the same `orca` either way. Claude Code's
+# BashOutput/TaskOutput/Monitor are the same act as a `wait`: asking a worker
+# that is already running whether it is done yet.
+POLL_TOOLS = {"wait", "wait_agent",
+              "BashOutput", "TaskOutput", "Monitor"}
+DISPATCH_TOOLS = {"send_message", "spawn_agent", "followup_task",
+                  "Agent", "SendMessage", "TaskStop"}
+# Claude Code's TaskCreate/TaskUpdate/TaskGet/TaskList are a to-do list the
+# session keeps for itself, not work handed to anyone, so they are in no set
+# here. Counting a to-do item as a dispatched task is the same denominator
+# inflation the comment above rejects, and a bigger one: a session that writes
+# ten to-dos and polls twenty times passes a budget it doubly breached.
+TASK_START_TOOLS = {"spawn_agent", "Agent"}
+EDIT_TOOLS = {"apply_patch", "Edit", "Write", "NotebookEdit"}
 
-# Only orca's own `--timeout-ms`, and only on a call already classified as
-# supervision: there the number is how long the coordinator intends to sleep
-# before asking again, which is what the rule is about.
+# A supervision call declares its window in up to three places, and the
+# *smallest* one is what actually decides how often the coordinator wakes.
 #
-# The tool-level `yield_time_ms` is deliberately not read, from any tool. It is
-# tempting -- `wait` and `write_stdin` carry one and often set it to 30s -- but
-# it is the same field, with the same meaning, that `exec`/`exec_command` carry
-# on every ordinary shell call: how long the call parks before returning
-# whatever output exists so far. Reading it from some tools and not others
-# splits on the tool name while claiming to split on meaning, and it would put
-# the majority of every reported breach on the reading this comment rejects.
+# An earlier version read only orca's `--timeout-ms` and deliberately ignored
+# the tool-level `yield_time_ms`, on the grounds that the yield is the same
+# field, with the same meaning, that every ordinary shell call carries: how
+# long the call parks before returning output so far. That reasoning is right
+# and the conclusion was wrong. Measured on a real coordinator: 36 calls of
+# `orca orchestration check --wait --timeout-ms 60000` issued through
+# `exec_command` with `yield_time_ms: 30000` returned at 30.00s every time,
+# carrying "Process running" -- orca was still blocking, and the harness had
+# yielded out from under it. The declared window never bound anything. The
+# yield was the poll interval.
+#
+# So the yield is read, but only on a call that *parks*: a `--wait`, a
+# blocking-wait tool, or the empty `write_stdin` that keeps such a call alive.
+# On a `terminal read` or a `task-list` the yield still means what the rejected
+# reading said it means -- a cap on waiting for output that already exists --
+# and is still not a window.
 TIMEOUT_FLAG = re.compile(r"--timeout-ms[=\s]+(\d+)")
+# `wait_agent` and Claude Code's `Monitor` declare theirs as a JSON key rather
+# than a CLI flag.
+TIMEOUT_JSON = re.compile(r'"timeout_ms"\s*:\s*(\d+)')
+YIELD_JSON = re.compile(r'"yield_time_ms"\s*:\s*(\d+)')
+WAIT_FLAG = re.compile(r"--wait(?![\w-])")
+# `terminal wait` parks by definition and says so in the subcommand rather than
+# in a flag, so a --wait-only test misses it. It is not a rare shape: it is the
+# most common blocking call in the measured corpus (177 occurrences of one
+# 60-second recipe), and the handoff records that the worst coordinator kept
+# using it after it had corrected its `check --wait` window. Keying parking on
+# the flag alone let the single largest real evasion through.
+PARK = re.compile(_subcommands("terminal", "wait"), re.I)
 
 
-def wait_windows(args):
-    """-> [ms, ...] every wait window a supervision command declares."""
-    return [int(m.group(1)) for m in TIMEOUT_FLAG.finditer(args)]
+def parks(name, args):
+    """Does this supervision call block, or does it return what already exists?"""
+    return (name in POLL_TOOLS or name == "write_stdin"
+            or bool(WAIT_FLAG.search(args)) or bool(PARK.search(args)))
+
+
+def wait_window(name, args):
+    """-> the effective ms a parking supervision call sleeps for, or None.
+
+    The minimum across every declared bound, because the coordinator wakes as
+    soon as the first of them expires."""
+    if not parks(name, args):
+        return None
+    declared = [int(m.group(1)) for pattern in (TIMEOUT_FLAG, TIMEOUT_JSON, YIELD_JSON)
+                for m in pattern.finditer(args)]
+    return min(declared) if declared else None
 
 
 def classify(name, args):
     """Bucket a call. The tool name is authoritative; only fall back to reading
     the arguments when the name alone does not say what the call is."""
-    if name == "apply_patch":
+    if name in EDIT_TOOLS:
         return "EDIT"
     if name == "write_stdin":
         # A write with nothing in it is a nudge to see what a worker is doing;
@@ -107,7 +190,7 @@ def classify(name, args):
 
 
 def starts_task(name, args):
-    if name == "apply_patch":  # patch text is content, never a dispatch
+    if name in EDIT_TOOLS:  # edited text is content, never a dispatch
         return False
     return name in TASK_START_TOOLS or bool(TASK_START.search(args))
 
@@ -133,15 +216,111 @@ def agent_path(meta):
     return spawn.get("agent_path") or "unnamed"
 
 
+def claude_agent(path):
+    """The agent type of a Claude Code subagent transcript, or None.
+
+    Subagents live at `<session>/subagents/agent-<id>.jsonl` with a sibling
+    `.meta.json`. A missing or unreadable meta still means a subagent -- the
+    directory says so -- so it keeps the label and loses only the type."""
+    if os.path.basename(os.path.dirname(path)) != "subagents":
+        return None
+    try:
+        with open(path[: -len(".jsonl")] + ".meta.json", encoding="utf-8") as fh:
+            return json.load(fh).get("agentType") or "unnamed"
+    except (OSError, ValueError, AttributeError):
+        return "unnamed"
+
+
+def scan_claude(path, lines, since):
+    """Claude Code transcript -> the same tuple `scan` returns.
+
+    Tokens are read off the assistant message and deduplicated by requestId:
+    one request is written as several lines when its reply mixes text and tool
+    calls, each line repeating the whole request's usage. Summing per line
+    inflates a session by roughly the share of its replies that used a tool --
+    40% on the transcript this was written against.
+
+    Unlike Codex, input_tokens here excludes the cache, so a cache read is
+    counted explicitly. It is most of a poll's cost and the whole reason
+    polling is expensive: the wait returns, nothing has finished, and the
+    entire context is re-sent to wait again."""
+    buckets = collections.defaultdict(lambda: [0, 0])
+    started, tasks, round_trips = "", 0, 0
+    driver, pending_task, windows, seen = "<none>", 0, [], set()
+    for line in lines:
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if ev.get("type") != "assistant":
+            continue
+        if not started:
+            # Only a line that carries one can date the session. Treating a
+            # missing timestamp as the empty string would compare below every
+            # --since and silently discard the whole transcript.
+            started = (ev.get("timestamp") or "")[:10]
+            if started and started < since:
+                return None
+        message = ev.get("message") if isinstance(ev.get("message"), dict) else {}
+        usage = message.get("usage") or {}
+        # `message.id` is the identity that split lines actually share; it is
+        # present on every assistant line in the measured corpus, while
+        # requestId is missing on some. Keying on the line's own uuid alone
+        # would give each half of a split reply a different key and count its
+        # usage twice, which is the inflation this dedupe exists to remove.
+        key = ev.get("requestId") or message.get("id") or ev.get("uuid")
+        # ponytail: the first line of a request is charged even if it carries
+        # no usage, so a split reply whose usage lands only on a later line
+        # reports zero for that request. Every assistant line in the measured
+        # corpus carries usage, and charging the first line is what keeps a
+        # request's tokens attributed to the call that drove it. Fixing it
+        # properly needs the driver remembered per key, which is more state
+        # than an unobserved case earns.
+        if key not in seen:
+            seen.add(key)
+            buckets[driver][0] += sum(usage.get(k, 0) for k in (
+                "input_tokens", "output_tokens",
+                "cache_read_input_tokens", "cache_creation_input_tokens"))
+            round_trips += 1
+            tasks += pending_task
+            driver, pending_task = "<none>", 0
+        for block in message.get("content") or []:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            name = block.get("name") or ""
+            raw = json.dumps(block.get("input") or {})
+            driver = classify(name, raw)
+            buckets[driver][1] += 1
+            pending_task += starts_task(name, raw)
+            if driver == "POLL":
+                window = wait_window(name, raw)
+                if window is not None:
+                    windows.append(window)
+    # A transcript no line could date cannot be placed in or out of --since, so
+    # it is dropped rather than counted into a range it may not belong to.
+    return ((started, buckets, tasks, round_trips, claude_agent(path), windows)
+            if buckets and started else None)
+
+
 def scan(path, since):
     """-> (started, {bucket: [tokens, calls]}, tasks, round_trips, agent, windows)
     or None, where windows are the wait windows in ms that supervision calls
-    declared."""
+    declared. The schema is detected per file: only Codex wraps every line in a
+    `payload`."""
     try:
         lines = open(path, encoding="utf-8", errors="replace").readlines()
-        head = json.loads(lines[0])
-    except (OSError, ValueError, IndexError):
+    except OSError:
         return None
+    try:
+        head = json.loads(lines[0])
+    except (ValueError, IndexError):
+        head = None
+    # Only Codex wraps every line in a `payload`, and only Codex needs its
+    # first line -- the session_meta. A first line that will not parse is
+    # therefore routed to the Claude reader, which skips bad lines and reads
+    # the rest, rather than discarding a whole transcript over one of them.
+    if not (isinstance(head, dict) and "payload" in head):
+        return scan_claude(path, lines, since)
     meta = head.get("payload") or {}
     started = meta.get("timestamp", "")[:10]
     if started < since:
@@ -172,7 +351,9 @@ def scan(path, since):
             # Only a supervision call declares a supervision window. The same
             # flag on a dispatch bounds how long that dispatch may take.
             if driver == "POLL":
-                windows += wait_windows(raw)
+                window = wait_window(name, raw)
+                if window is not None:
+                    windows.append(window)
         elif ev.get("type") == "event_msg" and kind == "token_count":
             usage = (payload.get("info") or {}).get("last_token_usage") or {}
             # Tokens belong to the round-trip, so they land on whichever call
@@ -190,7 +371,16 @@ def report(buckets, tasks, round_trips, label, windows, min_wait_ms, indent=""):
     dispatches produces a number that means nothing next to the enforced one."""
     total = sum(t for t, _ in buckets.values()) or 1
     polls = buckets["POLL"][1]
-    head = f"{indent}{label}: {total/1e6:.1f}M tokens, {round_trips} round-trips"
+    # Tokens per round-trip is the context tax: on a measured repo, 97% of all
+    # spend was context re-sent, not text produced, so what a turn *did* moves
+    # the bill far less than how much context it carried while doing it. A
+    # session that keeps its reads bounded pays a third of what a session that
+    # loads the codebase pays for the same number of turns. Printed next to the
+    # ratio because the two rules trade against each other: waiting wider costs
+    # fewer turns, and every turn is charged at this rate.
+    per_trip = total / round_trips if round_trips else 0
+    head = (f"{indent}{label}: {total/1e6:.1f}M tokens, {round_trips} round-trips, "
+            f"{per_trip/1e3:.0f}k per trip")
     if tasks is None:
         per_task = None
         print(head)
@@ -213,11 +403,20 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--since", help="YYYY-MM-DD (default: 7 days ago)")
     ap.add_argument("--sessions", action="store_true", help="break down per session")
-    ap.add_argument("--root", default="~/.codex/sessions", help="rollout log directory")
+    ap.add_argument("--root", action="append", metavar="DIR",
+                    help="log directory, repeatable (default: ~/.codex/sessions "
+                         "and ~/.claude/projects)")
     ap.add_argument("--max-polls-per-task", type=float, default=2.0,
                     help="supervision budget from docs/orchestration/supervision.md")
-    ap.add_argument("--min-wait-ms", type=int, default=900_000,
-                    help="shortest supervision wait the same file allows (15 minutes)")
+    # 5 minutes, not the 15 the rule states, because 15 is not reachable on
+    # this path: the effective window is capped by the harness yield, and the
+    # largest yield observed across the measured corpus is 300000 ms against
+    # 1469 calls at 30000. A floor of 15 minutes here would fail every session
+    # unconditionally and stop being a signal. 15 minutes remains the rule for
+    # a coordinator that waits *outside* the model loop, where nothing caps it.
+    ap.add_argument("--min-wait-ms", type=int, default=300_000,
+                    help="shortest effective supervision wait the substrate can honour "
+                         "(5 minutes; docs/orchestration/supervision.md asks for 15 off-loop)")
     args = ap.parse_args()
     since = args.since or str(datetime.date.today() - datetime.timedelta(days=7))
     try:
@@ -226,10 +425,13 @@ def main():
         print(f"--since must be YYYY-MM-DD, got {since!r}", file=sys.stderr)
         return 2
 
-    found = [(p, r) for p in glob.glob(os.path.expanduser(args.root) + "/**/*.jsonl", recursive=True)
+    roots = args.root or ["~/.codex/sessions", "~/.claude/projects"]
+    found = [(p, r)
+             for root in roots
+             for p in glob.glob(os.path.expanduser(root) + "/**/*.jsonl", recursive=True)
              for r in [scan(p, since)] if r]
     if not found:
-        print(f"no sessions since {since} under {args.root} — nothing measured, "
+        print(f"no sessions since {since} under {', '.join(roots)} — nothing measured, "
               f"budget not checked")
         return 0
 
@@ -299,7 +501,9 @@ def main():
     if breach > args.max_polls_per_task:
         print(f"\nover budget: {breach:.1f} supervision calls per dispatched task "
               f"> {args.max_polls_per_task:.0f}. Wait wider — one blocking wait covering every "
-              f"outstanding worker, window >= 15 minutes. See "
+              f"outstanding worker. Cheapest is to wait off the model loop and be re-invoked on "
+              f"the event; if blocking in-call, set the harness yield and the window together, "
+              f"since the smaller one decides how often you wake. See "
               f"docs/orchestration/supervision.md#supervise.")
         failed = True
     return 1 if failed else 0
