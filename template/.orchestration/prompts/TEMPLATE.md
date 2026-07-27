@@ -37,10 +37,27 @@ One blocking wait covering every outstanding worker, at the window above.
 Never one wait per worker, never a poll loop between waits. A timeout is a
 checkpoint: re-wait at the same window.
 
-Prefer a path where the wait happens **outside** the model loop — the
-coordinator ends its turn and the substrate re-invokes it on the event. Wall
-clock is free; wall clock held open inside a tool call is not. If the
-substrate offers no such path, block in as few calls as possible:
+Prefer a path where the wait happens **outside** the model loop. Wall clock is
+free; wall clock held open inside a tool call is not — every wake re-sends the
+whole context. On Orca that path is the runtime's own coordinator loop, which
+returns immediately and polls inside the runtime for zero model tokens:
+
+```sh
+orca orchestration run --spec "<goal>" --poll-interval-ms 30000 --max-concurrent 3 --json
+# returns a run ID immediately; check progress when you have a reason to:
+orca orchestration task-list --brief --json
+```
+
+A 30s poll interval is correct *here* and wrong in a model turn: this loop runs
+in the Orca process and costs nothing per iteration. That is the whole
+distinction — cheap polling belongs in the runtime, not the model.
+
+Measured: across the corpus `orca orchestration run` was invoked twice, both
+times as `--help`. Two coordinators read what it did and hand-rolled the loop
+anyway, at 43% of all tokens burned. If a primitive is only described and never
+shown, it does not get used.
+
+If the substrate offers no such path, block in as few calls as possible:
 
 ```sh
 # Two numbers, and the smaller one is the rule. The window below is the
