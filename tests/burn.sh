@@ -81,8 +81,8 @@ test_budget_rejects_excess_supervision() {
     *) fail "expected the over-budget line, got: $output" ;;
   esac
   case $output in
-    *'window >= 15 minutes'*) ;;
-    *) fail "remediation must state the documented window, got: $output" ;;
+    *'the smaller one decides how often you wake'*) ;;
+    *) fail "remediation must name the binding bound, got: $output" ;;
   esac
 }
 
@@ -408,6 +408,12 @@ test_only_thread_source_makes_a_session_a_subagent() {
   esac
 }
 
+# A blocking wait issued through the shell, with its harness yield stated
+# separately from orca's own window.
+wait_turn() { # $1 = orca window ms, $2 = harness yield ms
+  turn exec_command "{\\\"cmd\\\":\\\"orca orchestration check --wait --types worker_done --timeout-ms $1 --json\\\",\\\"yield_time_ms\\\":$2,\\\"workdir\\\":\\\"/demo\\\"}"
+}
+
 test_a_short_wait_window_is_a_breach() {
   local root="$TMP_ROOT/shortwait" output
   # Two supervision calls over one dispatch is within the ratio budget, so this
@@ -415,18 +421,18 @@ test_a_short_wait_window_is_a_breach() {
   # 15-60 minutes is the right primitive used as a poll loop.
   write_rollout "$root/2026/07/24" 0 1 0
   {
-    shell_turn "orca orchestration check --wait --types worker_done --timeout-ms 60000 --json"
-    shell_turn "orca orchestration check --wait --types worker_done --timeout-ms 900000 --json"
+    wait_turn 60000 60000
+    wait_turn 900000 900000
   } >>"$root/2026/07/24/rollout-demo.jsonl"
   if output=$(burn "$root"); then
     fail "a 60s supervision window must fail: $output"
   fi
   case $output in
-    *'window too short: worst is 1 under 15 minutes'*) ;;
+    *'window too short: worst is 1 under 5 minutes'*) ;;
     *) fail "expected the short window named with its floor, got: $output" ;;
   esac
   case $output in
-    *'1 of 2 declared wait windows under 15m, shortest 60s'*) ;;
+    *'1 of 2 declared wait windows under 5m, shortest 60s'*) ;;
     *) fail "expected the per-session window line, got: $output" ;;
   esac
   # Same log, floor lowered below the window: the ratio alone must pass it.
@@ -434,17 +440,35 @@ test_a_short_wait_window_is_a_breach() {
     fail "a 60s window must pass an explicit 60s floor"
 }
 
-test_a_shell_yield_is_not_a_supervision_window() {
+test_the_smallest_declared_bound_is_the_window() {
+  local root="$TMP_ROOT/effective" output
+  # The measured failure: orca was told to wait 15 minutes, the harness was
+  # told to yield after 30 seconds, and the call returned in 30 seconds with
+  # the worker still running. Reading the flag alone scores this as compliant.
+  write_rollout "$root/2026/07/24" 0 1 0
+  wait_turn 900000 30000 >>"$root/2026/07/24/rollout-demo.jsonl"
+  if output=$(burn "$root"); then
+    fail "a 15m window behind a 30s yield must fail: $output"
+  fi
+  case $output in
+    *'shortest 30s'*) ;;
+    *) fail "expected the yield to be the effective window, got: $output" ;;
+  esac
+}
+
+test_a_non_blocking_read_declares_no_window() {
   local root="$TMP_ROOT/shellyield" output
-  # `exec_command` carries `yield_time_ms` on every call -- how long the shell
-  # parks before returning output, not how long the coordinator means to sleep.
-  # `shell_turn` sets it to 10s, so reading it here would fail every fixture in
-  # this file on a rule none of them are testing.
+  # `exec_command` carries `yield_time_ms` on every call. On a call that parks
+  # it is the poll interval; on one that returns output already sitting in a
+  # buffer it is a cap on collecting that output, and means nothing about how
+  # long the coordinator intends to sleep. `shell_turn` sets it to 10s, so
+  # reading it here would fail every fixture in this file on a rule none of
+  # them are testing.
   write_rollout "$root/2026/07/24" 0 1 0
   shell_turn "orca terminal read --terminal t1 --json" >>"$root/2026/07/24/rollout-demo.jsonl"
   output=$(burn "$root") || fail "a shell yield must not count as a wait window: $output"
   case $output in
-    *'window too short'*) fail "a shell yield must not trip the window rule: $output" ;;
+    *'window too short'*) fail "a non-blocking read must not trip the window rule: $output" ;;
   esac
 }
 
@@ -462,20 +486,23 @@ test_a_timeout_on_a_dispatch_is_not_a_supervision_window() {
   esac
 }
 
-test_a_tool_level_yield_is_never_a_supervision_window() {
+test_a_tool_level_yield_on_a_parking_call_is_the_window() {
   local root="$TMP_ROOT/toolyield" output
-  # `wait` and `write_stdin` carry `yield_time_ms`, and so does every ordinary
-  # `exec_command`. It is the same field with the same meaning in all three --
-  # how long the call parks before returning output so far -- so none of them
-  # declare a supervision window. Only orca's own flag does.
+  # `wait` parks by definition, and an empty `write_stdin` is the keepalive
+  # that finishes a park someone else started -- measured, 73 of them against
+  # 36 waits in one session. Both wake the coordinator when the yield expires,
+  # so the yield is the interval, whatever else was declared.
   write_rollout "$root/2026/07/24" 0 0 0
   {
     turn wait '{\"cell_id\":\"1\",\"yield_time_ms\":30000}'
     turn write_stdin '{\"chars\":\"\",\"session_id\":\"s1\",\"yield_time_ms\":30000}'
   } >>"$root/2026/07/24/rollout-demo.jsonl"
-  output=$(burn "$root") || fail "a tool-level yield must not be a wait window: $output"
+  if output=$(burn "$root"); then
+    fail "a 30s park must fail the window rule: $output"
+  fi
   case $output in
-    *'window too short'*) fail "a tool yield must not trip the window rule: $output" ;;
+    *'2 of 2 declared wait windows under 5m, shortest 30s'*) ;;
+    *) fail "expected both parks counted, got: $output" ;;
   esac
 }
 
@@ -484,8 +511,7 @@ test_the_window_rule_applies_without_any_dispatch() {
   # The per-task ratio needs a denominator; a single call's window does not.
   # A session that only ever waited, badly, must still be caught.
   write_rollout "$root/2026/07/24" 0 0 0
-  shell_turn "orca orchestration check --wait --types worker_done --timeout-ms 30000 --json" \
-    >>"$root/2026/07/24/rollout-demo.jsonl"
+  wait_turn 30000 30000 >>"$root/2026/07/24/rollout-demo.jsonl"
   if output=$(burn "$root"); then
     fail "a 30s window with no dispatch must still fail: $output"
   fi
@@ -519,6 +545,67 @@ test_both_breaches_are_reported_together() {
   esac
 }
 
+test_a_mention_without_the_cli_is_not_supervision() {
+  local root="$TMP_ROOT/mention" output
+  # A session that writes *about* orchestration puts the same words in the same
+  # field a command occupies: commit messages, PR bodies, heredoc'd analysis
+  # scripts. Only a call that names the CLI is a call.
+  write_rollout "$root/2026/07/24" 0 1 0
+  shell_turn "git commit -m 'cap polling: 47% of tokens went to orchestration check waits'" \
+    >>"$root/2026/07/24/rollout-demo.jsonl"
+  output=$(burn "$root") || fail "a mention must not be supervision: $output"
+  case $output in
+    *'0 polls / 1 tasks'*) ;;
+    *) fail "expected the mention to land in WORK, got: $output" ;;
+  esac
+}
+
+# Claude Code transcripts: one JSON object per line, no `payload` wrapper, and
+# usage on the assistant message with the cache counted separately.
+claude_turn() { # $1 = requestId, $2 = tool name, $3 = tool input JSON
+  printf '{"type":"assistant","timestamp":"2026-07-24T01:00:00.000Z","requestId":"%s","uuid":"u-%s-%s","message":{"usage":{"input_tokens":1000,"output_tokens":1000,"cache_read_input_tokens":7000,"cache_creation_input_tokens":1000},"content":[{"type":"tool_use","name":"%s","input":%s}]}}\n' \
+    "$1" "$1" "$2" "$2" "$3"
+}
+
+test_a_claude_transcript_is_measured() {
+  local root="$TMP_ROOT/claude" dir="$TMP_ROOT/claude/-demo-project" output
+  mkdir -p "$dir"
+  {
+    printf '{"type":"last-prompt","sessionId":"s1","leafUuid":"x"}\n'
+    claude_turn req1 Agent '{"description":"worker","prompt":"implement it"}'
+    claude_turn req2 Monitor '{"command":"gh pr view 1"}'
+    claude_turn req3 Monitor '{"command":"gh pr view 1"}'
+    claude_turn req4 Monitor '{"command":"gh pr view 1"}'
+    claude_turn req5 Edit '{"file_path":"/demo/a","old_string":"a","new_string":"b"}'
+  } >"$dir/session.jsonl"
+  if output=$(burn "$root"); then
+    fail "3 polls against 1 spawned agent must fail the budget: $output"
+  fi
+  case $output in
+    *'3 polls / 1 tasks = 3.0 per task'*) ;;
+    *) fail "expected the Claude session to be measured, got: $output" ;;
+  esac
+}
+
+test_a_split_claude_reply_counts_its_tokens_once() {
+  local root="$TMP_ROOT/claudesplit" dir="$TMP_ROOT/claudesplit/-demo-project" output
+  # One request whose reply mixes text and a tool call is written as several
+  # lines, each repeating that request's whole usage. Summing per line inflates
+  # a session by the share of its replies that used a tool.
+  mkdir -p "$dir"
+  {
+    printf '{"type":"last-prompt","sessionId":"s1","leafUuid":"x"}\n'
+    claude_turn req1 Read '{"file_path":"/demo/a"}'
+    claude_turn req1 Bash '{"command":"pytest -q"}'
+    claude_turn req2 Bash '{"command":"pytest -q"}'
+  } >"$dir/session.jsonl"
+  output=$(burn "$root") || fail "a quiet Claude session must pass: $output"
+  case $output in
+    *'2 round-trips'*) ;;
+    *) fail "expected 2 round-trips for 2 requests, got: $output" ;;
+  esac
+}
+
 test_bad_since_is_rejected() {
   local root="$TMP_ROOT/since" status=0
   write_rollout "$root/2026/07/24" 0 1 0
@@ -548,11 +635,15 @@ test_the_role_mixed_total_shows_no_ratio
 test_a_subagent_session_is_labelled_as_one
 test_only_thread_source_makes_a_session_a_subagent
 test_a_short_wait_window_is_a_breach
-test_a_shell_yield_is_not_a_supervision_window
+test_a_non_blocking_read_declares_no_window
+test_the_smallest_declared_bound_is_the_window
 test_a_timeout_on_a_dispatch_is_not_a_supervision_window
-test_a_tool_level_yield_is_never_a_supervision_window
+test_a_tool_level_yield_on_a_parking_call_is_the_window
 test_the_window_rule_applies_without_any_dispatch
 test_both_breaches_are_reported_together
+test_a_mention_without_the_cli_is_not_supervision
+test_a_claude_transcript_is_measured
+test_a_split_claude_reply_counts_its_tokens_once
 test_bad_since_is_rejected
 
 printf 'PASS: supervision-cost meter\n'
