@@ -70,9 +70,17 @@ done
 # immutable dispatch history: the handoff that diagnosed this failure quotes
 # the 60s literal as evidence, and rewriting history to satisfy a lint is a
 # worse trade than leaving the past on record.
-bad_windows=$(grep -rnoE --binary-files=without-match -- '--timeout-ms[= ]+[0-9]+' "$ROOT/template" 2>/dev/null \
-  | grep -v -e '/burn\.py:' -e '/__pycache__/' \
-  | awk -F'[= ]' '{ n = $NF + 0; if (n < 900000) print }') || true
+# grep exits 1 for "no matches", which is the clean case, and 2+ for a real
+# error. Collapsing both into `|| true` would turn an unreadable directory into
+# a silent pass -- the gate reporting nothing wrong because it read nothing.
+# `[[:space:]]` rather than a literal space: a tab is valid shell between a
+# flag and its value, and would otherwise walk straight past the gate.
+window_hits=$(grep -rnoE --binary-files=without-match -- '--timeout-ms[=[:space:]]+[0-9]+' "$ROOT/template") \
+  || [ $? -eq 1 ] \
+  || { printf 'window gate: grep failed scanning template/\n' >&2; exit 1; }
+bad_windows=$(printf '%s\n' "$window_hits" \
+  | grep -v -e '^$' -e '/burn\.py:' -e '/__pycache__/' \
+  | awk -F'[=[:space:]]' '{ n = $NF + 0; if (n < 900000) print }') || true
 [ -z "$bad_windows" ] || {
   printf 'supervision window below the 15-minute floor in shipped text:\n%s\n' "$bad_windows" >&2
   exit 1

@@ -456,6 +456,24 @@ test_the_smallest_declared_bound_is_the_window() {
   esac
 }
 
+test_a_subcommand_that_parks_without_a_wait_flag_is_a_window() {
+  local root="$TMP_ROOT/terminalwait" output
+  # `terminal wait` blocks, and says so in the subcommand rather than a flag.
+  # Testing for `--wait` alone missed it -- and it is the most common blocking
+  # call in the measured corpus, so the gap swallowed the largest real
+  # evasion rather than an edge case.
+  write_rollout "$root/2026/07/24" 0 1 0
+  shell_turn "orca terminal wait --terminal t1 --for tui-idle --timeout-ms 60000 --json" \
+    >>"$root/2026/07/24/rollout-demo.jsonl"
+  if output=$(burn "$root"); then
+    fail "a 60s terminal wait must fail the window rule: $output"
+  fi
+  case $output in
+    *'shortest 10s'*) ;;
+    *) fail "expected the harness yield to bound the park, got: $output" ;;
+  esac
+}
+
 test_a_non_blocking_read_declares_no_window() {
   local root="$TMP_ROOT/shellyield" output
   # `exec_command` carries `yield_time_ms` on every call. On a call that parks
@@ -636,6 +654,7 @@ test_a_subagent_session_is_labelled_as_one
 test_only_thread_source_makes_a_session_a_subagent
 test_a_short_wait_window_is_a_breach
 test_a_non_blocking_read_declares_no_window
+test_a_subcommand_that_parks_without_a_wait_flag_is_a_window
 test_the_smallest_declared_bound_is_the_window
 test_a_timeout_on_a_dispatch_is_not_a_supervision_window
 test_a_tool_level_yield_on_a_parking_call_is_the_window

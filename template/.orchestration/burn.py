@@ -65,6 +65,13 @@ import argparse, collections, datetime, glob, json, os, re, sys
 # ponytail: text-level, so prose that quotes a whole command ("run `orca
 # terminal read ...`") still counts. Nothing in the log distinguishes a command
 # from a quotation of one; closing that needs a field the log does not carry.
+#
+# The same literal requirement misses shell indirection -- `cli=orca; "$cli"
+# orchestration dispatch ...` scores as WORK, which deflates the denominator
+# and can turn a breach into a pass. Left as-is deliberately: indirection
+# appears zero times in the measured corpus, while dropping the anchor
+# reintroduces 22 false polls out of 48. Measured harm beats hypothetical
+# harm. Revisit if a coordinator ever invokes the CLI through a variable.
 def _subcommands(group, *names):
     return rf"\borca\s+{group}\s+(?:{'|'.join(names)})(?![\w-])"
 
@@ -132,12 +139,19 @@ TIMEOUT_FLAG = re.compile(r"--timeout-ms[=\s]+(\d+)")
 TIMEOUT_JSON = re.compile(r'"timeout_ms"\s*:\s*(\d+)')
 YIELD_JSON = re.compile(r'"yield_time_ms"\s*:\s*(\d+)')
 WAIT_FLAG = re.compile(r"--wait(?![\w-])")
+# `terminal wait` parks by definition and says so in the subcommand rather than
+# in a flag, so a --wait-only test misses it. It is not a rare shape: it is the
+# most common blocking call in the measured corpus (177 occurrences of one
+# 60-second recipe), and the handoff records that the worst coordinator kept
+# using it after it had corrected its `check --wait` window. Keying parking on
+# the flag alone let the single largest real evasion through.
+PARK = re.compile(_subcommands("terminal", "wait"), re.I)
 
 
 def parks(name, args):
     """Does this supervision call block, or does it return what already exists?"""
     return (name in POLL_TOOLS or name == "write_stdin"
-            or bool(WAIT_FLAG.search(args)))
+            or bool(WAIT_FLAG.search(args)) or bool(PARK.search(args)))
 
 
 def wait_window(name, args):
@@ -241,14 +255,27 @@ def scan_claude(path, lines, since):
         if ev.get("type") != "assistant":
             continue
         if not started:
+            # Only a line that carries one can date the session. Treating a
+            # missing timestamp as the empty string would compare below every
+            # --since and silently discard the whole transcript.
             started = (ev.get("timestamp") or "")[:10]
-            if started < since:
+            if started and started < since:
                 return None
         message = ev.get("message") if isinstance(ev.get("message"), dict) else {}
         usage = message.get("usage") or {}
-        # Fall back to the line's own uuid so a message with no requestId is
-        # counted once rather than folded into whatever shares its None key.
-        key = ev.get("requestId") or ev.get("uuid")
+        # `message.id` is the identity that split lines actually share; it is
+        # present on every assistant line in the measured corpus, while
+        # requestId is missing on some. Keying on the line's own uuid alone
+        # would give each half of a split reply a different key and count its
+        # usage twice, which is the inflation this dedupe exists to remove.
+        key = ev.get("requestId") or message.get("id") or ev.get("uuid")
+        # ponytail: the first line of a request is charged even if it carries
+        # no usage, so a split reply whose usage lands only on a later line
+        # reports zero for that request. Every assistant line in the measured
+        # corpus carries usage, and charging the first line is what keeps a
+        # request's tokens attributed to the call that drove it. Fixing it
+        # properly needs the driver remembered per key, which is more state
+        # than an unobserved case earns.
         if key not in seen:
             seen.add(key)
             buckets[driver][0] += sum(usage.get(k, 0) for k in (
@@ -269,8 +296,10 @@ def scan_claude(path, lines, since):
                 window = wait_window(name, raw)
                 if window is not None:
                     windows.append(window)
+    # A transcript no line could date cannot be placed in or out of --since, so
+    # it is dropped rather than counted into a range it may not belong to.
     return ((started, buckets, tasks, round_trips, claude_agent(path), windows)
-            if buckets else None)
+            if buckets and started else None)
 
 
 def scan(path, since):
@@ -280,12 +309,17 @@ def scan(path, since):
     `payload`."""
     try:
         lines = open(path, encoding="utf-8", errors="replace").readlines()
+    except OSError:
+        return None
+    try:
         head = json.loads(lines[0])
-    except (OSError, ValueError, IndexError):
-        return None
-    if not isinstance(head, dict):
-        return None
-    if "payload" not in head:
+    except (ValueError, IndexError):
+        head = None
+    # Only Codex wraps every line in a `payload`, and only Codex needs its
+    # first line -- the session_meta. A first line that will not parse is
+    # therefore routed to the Claude reader, which skips bad lines and reads
+    # the rest, rather than discarding a whole transcript over one of them.
+    if not (isinstance(head, dict) and "payload" in head):
         return scan_claude(path, lines, since)
     meta = head.get("payload") or {}
     started = meta.get("timestamp", "")[:10]

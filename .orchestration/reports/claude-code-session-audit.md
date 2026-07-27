@@ -332,6 +332,55 @@ Still open, cheapest first:
    strongest argument for the off-loop path and it was not visible until the
    window was measured as an effective window.
 
+## Cross-model review (REVIEWER slot: Codex, gpt-5.6-sol)
+
+Requested changes, seven findings. Five fixed, two refused with reasons.
+
+**The one that mattered.** `parks()` keyed on the `--wait` flag, so `orca
+terminal wait --for tui-idle --timeout-ms 60000` — which blocks, and says so
+in the subcommand rather than a flag — declared no window and passed. Not an
+edge case: **177 occurrences of that one recipe** in the corpus, and the
+handoff records that the worst coordinator kept using `terminal wait` after
+it had corrected its `check --wait` window. The gap swallowed the largest
+real evasion available. Fixed, with a test.
+
+Coverage after: **239 → 288** declared windows, 209 → 258 under floor,
+`019f9dfd` 118 → **148**.
+
+Also fixed:
+
+- `verify.sh`: `|| true` collapsed grep's "no matches" (exit 1) with a real
+  error (exit 2+), so an unreadable directory would have reported a clean
+  gate — a pass produced by reading nothing.
+- `verify.sh`: `[= ]+` missed a tab between flag and value, which is valid
+  shell. Now `[=[:space:]]+`.
+- `scan_claude()`: dedupe now keys on `requestId or message.id or uuid`.
+  `message.id` is what split lines actually share, present on 3,249 of 3,249
+  assistant lines; `requestId` is missing on 13.
+- `scan_claude()`: a first assistant line without a timestamp set
+  `started=""`, which compares below every `--since` and silently discarded
+  the whole transcript. A malformed first line did the same at the `scan()`
+  level; it now routes to the reader that skips bad lines.
+
+Refused, both recorded in the code:
+
+- **Shell indirection** (`cli=orca; "$cli" orchestration dispatch`) evades the
+  CLI-name anchor and deflates the denominator. Real mechanism, but it
+  appears **zero** times in the corpus, while dropping the anchor
+  reintroduces 22 false polls out of 48. Measured harm beats hypothetical
+  harm.
+- **A request whose usage lands only on a later split line** reports zero.
+  Every assistant line in the corpus carries usage, and charging the first
+  line is what keeps tokens attributed to the call that drove them. A proper
+  fix needs the driver remembered per key — more state than an unobserved
+  case earns.
+
+Worth noting against finding 3 of this report: an independent model found a
+177-occurrence evasion that six rounds of review on the original meter did
+not. The difference is that this review was pointed at the dangerous
+*direction* — false negatives that deflate the budget's denominator — rather
+than asked to look at the diff.
+
 ## Dogfooding
 
 This audit session (`7b2dc990`) spent 3.0M tokens over 36 round-trips at
