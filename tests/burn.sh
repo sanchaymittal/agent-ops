@@ -352,6 +352,33 @@ test_the_role_mixed_total_shows_no_ratio() {
   esac
 }
 
+test_a_subagent_session_is_labelled_as_one() {
+  local root="$TMP_ROOT/subagent" output
+  write_rollout "$root/2026/07/24" 2 1 0
+  # A forked reviewer thread. Its log opens with the parent's history replayed,
+  # and it dispatches nothing, so unlabelled it reads as another coordinator
+  # that only ever watched. `source` is an object here, a bare "cli" string in
+  # the session above.
+  mkdir -p "$root/2026/07/25"
+  {
+    printf '{"type":"session_meta","payload":{"timestamp":"2026-07-25T01:00:00.000Z","cwd":"/demo","thread_source":"subagent","source":{"subagent":{"thread_spawn":{"parent_thread_id":"p1","depth":1,"agent_path":"/root/standards_review"}}}}}\n'
+    shell_turn "pytest -q"
+  } >"$root/2026/07/25/rollout-fork.jsonl"
+  output=$(burn "$root" --sessions) || fail "2 polls / 1 task is within budget: $output"
+  case $output in
+    *'rollout-fork.jsonl (subagent /root/standards_review)'*) ;;
+    *) fail "a forked thread must be labelled with its agent path, got: $output" ;;
+  esac
+  case $output in
+    *'rollout-demo.jsonl:'*) ;;
+    *) fail "a user-started session must carry no subagent label, got: $output" ;;
+  esac
+  case $output in
+    *'rollout-demo.jsonl (subagent'*)
+      fail "a user-started session must not be labelled a subagent: $output" ;;
+  esac
+}
+
 test_bad_since_is_rejected() {
   local root="$TMP_ROOT/since" status=0
   write_rollout "$root/2026/07/24" 0 1 0
@@ -378,6 +405,7 @@ test_batched_supervision_calls_each_count
 test_raw_argument_calls_are_classified
 test_write_stdin_counts_as_supervision_only_when_empty
 test_the_role_mixed_total_shows_no_ratio
+test_a_subagent_session_is_labelled_as_one
 test_bad_since_is_rejected
 
 printf 'PASS: supervision-cost meter\n'

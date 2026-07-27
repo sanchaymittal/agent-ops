@@ -15,6 +15,10 @@ Scope limits, so the numbers are not read for more than they are:
     here; point --root at that CLI's logs only if they share this schema.
   - EDIT counts the `apply_patch` tool. A patch applied through a shell command
     lands in WORK, so EDIT is a floor on real editing, not a measurement of it.
+  - A subagent thread forks its parent, so its log opens with the parent's
+    history replayed. Those inherited events are the parent's work, not the
+    fork's; sessions are labelled with their agent path so one worker's forks
+    are not read as that many independent coordinators.
 """
 import argparse, collections, datetime, glob, json, os, re, sys
 
@@ -87,16 +91,34 @@ def ratio_text(per_task):
     return "n/a" if per_task == float("inf") else f"{per_task:.1f}"
 
 
+def agent_path(meta):
+    """The forked thread's agent path, or None for a session a user started.
+
+    A top-level session records `"source": "cli"`; a subagent records an object
+    naming the thread that spawned it. The distinction matters because a fork
+    inherits the parent's transcript: its log replays the parent's edits within
+    milliseconds of the fork, so counting a fork as an independent session
+    reports one worker's `n` reviewers as `n` more coordinators that dispatched
+    nothing."""
+    source = meta.get("source")
+    if not isinstance(source, dict):
+        return None
+    spawn = (source.get("subagent") or {}).get("thread_spawn") or {}
+    return spawn.get("agent_path") or "subagent"
+
+
 def scan(path, since):
-    """-> (started, {bucket: [tokens, calls]}, tasks, round_trips) or None."""
+    """-> (started, {bucket: [tokens, calls]}, tasks, round_trips, agent) or None."""
     try:
         lines = open(path, encoding="utf-8", errors="replace").readlines()
         head = json.loads(lines[0])
     except (OSError, ValueError, IndexError):
         return None
-    started = (head.get("payload") or {}).get("timestamp", "")[:10]
+    meta = head.get("payload") or {}
+    started = meta.get("timestamp", "")[:10]
     if started < since:
         return None
+    agent = agent_path(meta)
     buckets = collections.defaultdict(lambda: [0, 0])  # bucket -> [tokens, calls]
     tasks = round_trips = 0
     driver = "<none>"
@@ -126,7 +148,7 @@ def scan(path, since):
             round_trips += 1
             tasks += pending_task
             driver, pending_task = "<none>", 0
-    return (started, buckets, tasks, round_trips) if buckets else None
+    return (started, buckets, tasks, round_trips, agent) if buckets else None
 
 
 def report(buckets, tasks, round_trips, label, indent=""):
@@ -180,13 +202,15 @@ def main():
     # work as unbounded supervision.
     coordinator_polls = coordinator_tasks = 0
     worst = (0.0, "")
-    for path, (started, buckets, session_tasks, session_trips) in sorted(found, key=lambda x: x[1][0]):
+    for path, (started, buckets, session_tasks, session_trips, agent) in sorted(found, key=lambda x: x[1][0]):
         for name, (tok, cnt) in buckets.items():
             combined[name][0] += tok
             combined[name][1] += cnt
         tasks += session_tasks
         round_trips += session_trips
         label = f"{started} {os.path.basename(path)[:40]}"
+        if agent:
+            label += f" (subagent {agent})"
         if args.sessions:
             report(buckets, session_tasks, session_trips, label, indent="  ")
         if not session_tasks:
