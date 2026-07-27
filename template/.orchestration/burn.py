@@ -64,27 +64,23 @@ POLL_TOOLS = {"wait", "wait_agent"}
 DISPATCH_TOOLS = {"send_message", "spawn_agent", "followup_task"}
 TASK_START_TOOLS = {"spawn_agent"}
 
-# `--timeout-ms` is orca's own flag, so a number following it on a supervision
-# command is always a wait window. `yield_time_ms` is read only from the tools
-# whose whole purpose is to wait: `exec`/`exec_command` carry one too, but there
-# it is how long a shell call parks before returning output, and reading it
-# would score every ordinary command as a short wait. On the day this rule was
-# written that one confusion would have added 329 false windows to 68 real ones.
+# Only orca's own `--timeout-ms`, and only on a call already classified as
+# supervision: there the number is how long the coordinator intends to sleep
+# before asking again, which is what the rule is about.
+#
+# The tool-level `yield_time_ms` is deliberately not read, from any tool. It is
+# tempting -- `wait` and `write_stdin` carry one and often set it to 30s -- but
+# it is the same field, with the same meaning, that `exec`/`exec_command` carry
+# on every ordinary shell call: how long the call parks before returning
+# whatever output exists so far. Reading it from some tools and not others
+# splits on the tool name while claiming to split on meaning, and it would put
+# the majority of every reported breach on the reading this comment rejects.
 TIMEOUT_FLAG = re.compile(r"--timeout-ms[=\s]+(\d+)")
-YIELD_TOOLS = {"wait", "wait_agent", "write_stdin"}
 
 
-def wait_windows(name, args):
-    """-> [ms, ...] every wait window a supervision call declares."""
-    windows = [int(m.group(1)) for m in TIMEOUT_FLAG.finditer(args)]
-    if name in YIELD_TOOLS:
-        try:
-            declared = json.loads(args).get("yield_time_ms")
-        except (ValueError, AttributeError):
-            declared = None
-        if isinstance(declared, int):
-            windows.append(declared)
-    return windows
+def wait_windows(args):
+    """-> [ms, ...] every wait window a supervision command declares."""
+    return [int(m.group(1)) for m in TIMEOUT_FLAG.finditer(args)]
 
 
 def classify(name, args):
@@ -176,7 +172,7 @@ def scan(path, since):
             # Only a supervision call declares a supervision window. The same
             # flag on a dispatch bounds how long that dispatch may take.
             if driver == "POLL":
-                windows += wait_windows(name, raw)
+                windows += wait_windows(raw)
         elif ev.get("type") == "event_msg" and kind == "token_count":
             usage = (payload.get("info") or {}).get("last_token_usage") or {}
             # Tokens belong to the round-trip, so they land on whichever call
@@ -248,8 +244,10 @@ def main():
     all_windows = []
     # The window rule is about a single call, not a rate, so unlike the ratio it
     # applies to any session that supervises -- a worker waiting on its own
-    # children is subject to it too.
-    shortest = (None, "")
+    # children is subject to it too. Named by the session with the most short
+    # windows rather than the single shortest one: pairing a global count with
+    # the owner of one outlier reads as if that session owned them all.
+    worst_windows = (0, "")
     for path, (started, buckets, session_tasks, session_trips, agent, windows) in sorted(found, key=lambda x: x[1][0]):
         for name, (tok, cnt) in buckets.items():
             combined[name][0] += tok
@@ -264,8 +262,8 @@ def main():
             report(buckets, session_tasks, session_trips, label, windows, args.min_wait_ms,
                    indent="  ")
         short = [w for w in windows if w < args.min_wait_ms]
-        if short and (shortest[0] is None or min(short) < shortest[0]):
-            shortest = (min(short), label)
+        if len(short) > worst_windows[0]:
+            worst_windows = (len(short), label)
         if not session_tasks:
             continue
         polls = buckets["POLL"][1]
@@ -280,13 +278,11 @@ def main():
     # Both rules are reported before either exits, so one breach never hides
     # the other.
     failed = False
-    if shortest[0] is not None:
-        short = sum(1 for w in all_windows if w < args.min_wait_ms)
-        print(f"\nwindow too short: {short} of {len(all_windows)} supervision waits ran under "
-              f"{args.min_wait_ms // 60000} minutes, down to {shortest[0] / 1000:.0f}s — "
-              f"{shortest[1]}. A short window makes the right primitive poll: the wait returns, "
-              f"nothing has finished, and the whole context is re-sent to wait again. See "
-              f"docs/orchestration/supervision.md#supervise.")
+    if worst_windows[0]:
+        print(f"\nwindow too short: worst is {worst_windows[0]} under "
+              f"{args.min_wait_ms // 60000} minutes — {worst_windows[1]}. A short window makes "
+              f"the right primitive poll: the wait returns, nothing has finished, and the whole "
+              f"context is re-sent to wait again. See docs/orchestration/supervision.md#supervise.")
         failed = True
 
     if not coordinator_tasks:

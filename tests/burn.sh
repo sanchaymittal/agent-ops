@@ -422,8 +422,12 @@ test_a_short_wait_window_is_a_breach() {
     fail "a 60s supervision window must fail: $output"
   fi
   case $output in
-    *'1 of 2 supervision waits ran under 15 minutes, down to 60s'*) ;;
+    *'window too short: worst is 1 under 15 minutes'*) ;;
     *) fail "expected the short window named with its floor, got: $output" ;;
+  esac
+  case $output in
+    *'1 of 2 declared wait windows under 15m, shortest 60s'*) ;;
+    *) fail "expected the per-session window line, got: $output" ;;
   esac
   # Same log, floor lowered below the window: the ratio alone must pass it.
   burn "$root" --min-wait-ms 60000 >/dev/null ||
@@ -444,19 +448,50 @@ test_a_shell_yield_is_not_a_supervision_window() {
   esac
 }
 
+test_a_timeout_on_a_dispatch_is_not_a_supervision_window() {
+  local root="$TMP_ROOT/dispatchtimeout" output
+  # The same flag on a dispatch bounds how long that dispatch may take, which
+  # is not a statement about how long the coordinator will sleep. Reading it
+  # would fail a coordinator that never polled at all.
+  write_rollout "$root/2026/07/24" 0 0 0
+  shell_turn "orca orchestration dispatch --task t1 --to h1 --timeout-ms 60000 --json" \
+    >>"$root/2026/07/24/rollout-demo.jsonl"
+  output=$(burn "$root") || fail "a dispatch timeout must not be a wait window: $output"
+  case $output in
+    *'window too short'*) fail "a dispatch timeout must not trip the window rule: $output" ;;
+  esac
+}
+
+test_a_tool_level_yield_is_never_a_supervision_window() {
+  local root="$TMP_ROOT/toolyield" output
+  # `wait` and `write_stdin` carry `yield_time_ms`, and so does every ordinary
+  # `exec_command`. It is the same field with the same meaning in all three --
+  # how long the call parks before returning output so far -- so none of them
+  # declare a supervision window. Only orca's own flag does.
+  write_rollout "$root/2026/07/24" 0 0 0
+  {
+    turn wait '{\"cell_id\":\"1\",\"yield_time_ms\":30000}'
+    turn write_stdin '{\"chars\":\"\",\"session_id\":\"s1\",\"yield_time_ms\":30000}'
+  } >>"$root/2026/07/24/rollout-demo.jsonl"
+  output=$(burn "$root") || fail "a tool-level yield must not be a wait window: $output"
+  case $output in
+    *'window too short'*) fail "a tool yield must not trip the window rule: $output" ;;
+  esac
+}
+
 test_the_window_rule_applies_without_any_dispatch() {
   local root="$TMP_ROOT/windownodispatch" output
   # The per-task ratio needs a denominator; a single call's window does not.
   # A session that only ever waited, badly, must still be caught.
   write_rollout "$root/2026/07/24" 0 0 0
-  turn wait '{\"cell_id\":\"1\",\"yield_time_ms\":30000}' \
+  shell_turn "orca orchestration check --wait --types worker_done --timeout-ms 30000 --json" \
     >>"$root/2026/07/24/rollout-demo.jsonl"
   if output=$(burn "$root"); then
-    fail "a 30s yield with no dispatch must still fail: $output"
+    fail "a 30s window with no dispatch must still fail: $output"
   fi
   case $output in
-    *'down to 30s'*) ;;
-    *) fail "expected the 30s yield reported, got: $output" ;;
+    *'shortest 30s'*) ;;
+    *) fail "expected the 30s window reported, got: $output" ;;
   esac
   case $output in
     *'the per-task budget does not apply'*) ;;
@@ -467,7 +502,7 @@ test_the_window_rule_applies_without_any_dispatch() {
 test_both_breaches_are_reported_together() {
   local root="$TMP_ROOT/bothrules" output
   write_rollout "$root/2026/07/24" 9 3 0   # 3.0 per task: over the ratio budget
-  turn wait '{\"cell_id\":\"1\",\"yield_time_ms\":30000}' \
+  shell_turn "orca orchestration check --wait --types worker_done --timeout-ms 30000 --json" \
     >>"$root/2026/07/24/rollout-demo.jsonl"
   if output=$(burn "$root"); then
     fail "both rules breached must fail: $output"
@@ -514,6 +549,8 @@ test_a_subagent_session_is_labelled_as_one
 test_only_thread_source_makes_a_session_a_subagent
 test_a_short_wait_window_is_a_breach
 test_a_shell_yield_is_not_a_supervision_window
+test_a_timeout_on_a_dispatch_is_not_a_supervision_window
+test_a_tool_level_yield_is_never_a_supervision_window
 test_the_window_rule_applies_without_any_dispatch
 test_both_breaches_are_reported_together
 test_bad_since_is_rejected
