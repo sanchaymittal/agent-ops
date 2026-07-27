@@ -16,9 +16,9 @@ Scope limits, so the numbers are not read for more than they are:
   - EDIT counts the `apply_patch` tool. A patch applied through a shell command
     lands in WORK, so EDIT is a floor on real editing, not a measurement of it.
   - A subagent thread forks its parent, so its log opens with the parent's
-    history replayed. Those inherited events are the parent's work, not the
-    fork's; sessions are labelled with their agent path so one worker's forks
-    are not read as that many independent coordinators.
+    history replayed. `--sessions` labels those threads with their agent path,
+    which is a label and nothing more: their tokens are real spend and stay in
+    every total, and a fork that dispatches is still judged as a coordinator.
 """
 import argparse, collections, datetime, glob, json, os, re, sys
 
@@ -94,17 +94,18 @@ def ratio_text(per_task):
 def agent_path(meta):
     """The forked thread's agent path, or None for a session a user started.
 
-    A top-level session records `"source": "cli"`; a subagent records an object
-    naming the thread that spawned it. The distinction matters because a fork
-    inherits the parent's transcript: its log replays the parent's edits within
-    milliseconds of the fork, so counting a fork as an independent session
-    reports one worker's `n` reviewers as `n` more coordinators that dispatched
-    nothing."""
-    source = meta.get("source")
-    if not isinstance(source, dict):
+    Read `thread_source`, which says what the thread is, rather than the shape
+    of `source`, which only correlates: a top-level session records the string
+    `"cli"`/`"exec"`/`"vscode"` there today, but an object-shaped `source` is
+    not by itself proof of a fork, and treating it as proof labels whatever
+    object shape a later CLI version introduces as a subagent. A spawned thread
+    that carries no `thread_spawn` -- a guardian is one -- is still a subagent,
+    so it keeps the label and loses only the path."""
+    if meta.get("thread_source") != "subagent":
         return None
+    source = meta.get("source") if isinstance(meta.get("source"), dict) else {}
     spawn = (source.get("subagent") or {}).get("thread_spawn") or {}
-    return spawn.get("agent_path") or "subagent"
+    return spawn.get("agent_path") or "unnamed"
 
 
 def scan(path, since):
