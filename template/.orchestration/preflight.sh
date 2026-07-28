@@ -73,3 +73,13 @@ lease_status=$("$SCRIPT_DIR/lease.sh" status 2>&1) ||
   fail lease "${lease_status#lease: }"
 
 printf 'preflight: ok (root %s)\n' "$root"
+
+# The supervision numbers ride out on the one channel a coordinator cannot skip.
+# Measured: a coordinator dispatched from a repo that had supervision.md sitting
+# in it, read AGENTS.md and docs/orchestration/index.md -- both of which link to
+# that file -- opened neither, and burned 52.8% of its tokens polling. A pointer
+# is not a rule. This script is already called before every dispatch and its
+# output is already read, because the caller is scanning for `blocked:`.
+printf 'supervision: one wait for all workers, window >= 900000 ms, harness yield >= 300000 ms (smaller binds)\n'
+printf 'supervision: waits must not consume events (orca: --peek); consume via an unread read after acting\n'
+printf 'supervision: no per-worker terminal reads; max 2 supervision calls per dispatched task\n'

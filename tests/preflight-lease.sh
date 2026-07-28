@@ -35,6 +35,26 @@ test_preflight_accepts_a_valid_dispatch() {
     fail "preflight rejected a valid dispatch"
 }
 
+test_preflight_prints_the_supervision_numbers() {
+  local output
+  output=$("$PREFLIGHT" --verify-cmd "printf verified") ||
+    fail "preflight rejected a valid dispatch"
+  # The delivery mechanism, not decoration: these lines are the only copy of the
+  # rule a coordinator is guaranteed to have in context when it starts waiting.
+  case $output in
+    *'window >= 900000 ms'*) ;;
+    *) fail "preflight did not print the window floor: $output" ;;
+  esac
+  case $output in
+    *'--peek'*) ;;
+    *) fail "preflight did not print the non-consuming wait rule: $output" ;;
+  esac
+  case $output in
+    *'max 2 supervision calls per dispatched task'*) ;;
+    *) fail "preflight did not print the polling budget: $output" ;;
+  esac
+}
+
 test_preflight_rejects_missing_cli_and_verify_command() {
   local output
   if output=$("$PREFLIGHT" --verify-cmd "printf verified" --cli agent-ops-absent-cli 2>&1); then fail "preflight accepted a missing CLI"; fi
@@ -206,6 +226,7 @@ test_newlines_in_caller_values_are_rejected() {
 }
 
 test_preflight_accepts_a_valid_dispatch
+test_preflight_prints_the_supervision_numbers
 test_preflight_rejects_missing_cli_and_verify_command
 test_preflight_rejects_an_unknown_role
 test_first_owner_acquires_the_lease

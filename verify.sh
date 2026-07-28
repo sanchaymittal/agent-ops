@@ -86,5 +86,22 @@ bad_windows=$(printf '%s\n' "$window_hits" \
   exit 1
 }
 
+# Same failure as the window gate, one flag over: a wait that consumes the event
+# it returns. Delivery is exactly-once, so an abandoned waiter -- which is what a
+# harness yield shorter than the window leaves behind on every iteration -- eats
+# the completion the coordinator is still waiting for. `--peek` leaves it unread.
+# Exemptions match the window gate for the same reasons: burn.py quotes the
+# un-peeked form as the defect it measures.
+peek_hits=$(grep -rnE --binary-files=without-match -- 'orca[[:space:]]+orchestration[[:space:]]+check.*--wait' "$ROOT/template") \
+  || [ $? -eq 1 ] \
+  || { printf 'peek gate: grep failed scanning template/\n' >&2; exit 1; }
+bad_peek=$(printf '%s\n' "$peek_hits" \
+  | grep -v -e '^$' -e '/burn\.py:' -e '/__pycache__/' \
+  | grep -v -- '--peek') || true
+[ -z "$bad_peek" ] || {
+  printf 'consuming check --wait (no --peek) in shipped text:\n%s\n' "$bad_peek" >&2
+  exit 1
+}
+
 git -C "$ROOT" diff --check
 printf 'PASS: repository verification\n'

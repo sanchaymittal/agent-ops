@@ -66,9 +66,19 @@ Until then, block in as few calls as possible:
 # The window never bound. Raising the window while leaving the yield at
 # 30s makes it worse -- a 15-minute window then costs 30 keepalive
 # round-trips instead of 2.
-orca orchestration check --wait --types worker_done --timeout-ms 900000 --json
+orca orchestration check --wait --peek --types worker_done --timeout-ms 900000 --json
 # ...issued with the largest yield the substrate allows (300000 ms is the
 # largest observed on Codex exec_command). Set both, or neither helps.
+#
+# `--peek` is not optional. Delivery is exactly-once: of N waits on one handle,
+# exactly one gets a given message and the rest return count 0. A wait the
+# harness cut short is still a live consumer, so the abandoned waiters left
+# behind by a short yield eat the `worker_done` the coordinator is waiting for.
+# Measured: a coordinator's `check --unread` returned nothing while the message
+# sat in `inbox` marked read. Peek leaves it unread, so it survives this session
+# dying -- and so the next wait returns it again immediately. Consume only after
+# acting on it, or the wait becomes a busy loop:
+orca orchestration check --unread --types worker_done --json
 ```
 
 One wait covers every outstanding worker. Do not follow it with a per-worker
