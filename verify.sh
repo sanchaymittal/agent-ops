@@ -7,13 +7,20 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 
 bash -n "$ROOT/init.sh" "$ROOT/verify.sh" "$ROOT/template/.orchestration/verify.sh" \
   "$ROOT/template/.orchestration/preflight.sh" "$ROOT/template/.orchestration/lease.sh" \
+  "$ROOT/template/.orchestration/supervise.sh" "$ROOT/template/.orchestration/role-launch.sh" \
   "$ROOT/tests/init.sh" "$ROOT/tests/verify-report.sh" "$ROOT/tests/preflight-lease.sh" \
-  "$ROOT/tests/burn.sh"
+  "$ROOT/tests/burn.sh" "$ROOT/tests/garuda-replay.sh"
+
+python3 -m py_compile "$ROOT/template/.orchestration/burn.py" \
+  "$ROOT/template/.orchestration/fallback-supervisor.py" \
+  "$ROOT/template/.orchestration/installer.py" \
+  "$ROOT/template/.orchestration/supervisor.py"
 
 "$ROOT/tests/init.sh"
 "$ROOT/tests/verify-report.sh"
 "$ROOT/tests/preflight-lease.sh"
 "$ROOT/tests/burn.sh"
+"$ROOT/tests/garuda-replay.sh"
 
 while IFS= read -r index; do
   lines=$(wc -l <"$index" | tr -d ' ')
@@ -60,6 +67,14 @@ for role_file in "$ROOT"/template/.codex/agents/*.toml; do
     exit 1
   }
 done
+
+# This repo runs the CI review it ships. Dogfooding only proves something if
+# the two files are the same file; a root copy that drifts is a workflow nobody
+# has actually exercised.
+cmp -s "$ROOT/.github/workflows/ocr-review.yml" "$ROOT/template/.github/workflows/ocr-review.yml" || {
+  printf 'ocr workflow drift: .github/workflows/ocr-review.yml != template/.github/workflows/ocr-review.yml\n' >&2
+  exit 1
+}
 
 # A window literal in shipped text is copied and generalized to every wait,
 # regardless of the prose around it -- that is how a measured coordinator ended
