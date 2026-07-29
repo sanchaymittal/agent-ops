@@ -8,6 +8,11 @@
 - Allowed paths: <ALLOWED_PATHS>
 - Verify command: {{VERIFY_CMD}}
 - Acceptance check: <ACCEPTANCE_CHECK>
+- Canonical prompt SHA: <PROMPT_SHA>
+
+Before dispatch, replace the canonical prompt SHA with the SHA-256 of this
+prompt after removing the `Canonical prompt SHA` line itself. The matching
+report must repeat that value.
 
 ## Scope
 

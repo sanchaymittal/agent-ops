@@ -8,10 +8,17 @@
 - Allowed paths: <ALLOWED_PATHS>
 - Verify command: {{VERIFY_CMD}}
 - Acceptance check: <ACCEPTANCE_CHECK>
+- Canonical prompt SHA: <PROMPT_SHA>
 - Acceptance evidence: <ACCEPTANCE_EVIDENCE>
 - Verify exit: <VERIFY_EXIT>
+- Verify transcript SHA: <VERIFY_TRANSCRIPT_SHA>
+- Failure reason: <FAILURE_REASON>
 - Verified at: <VERIFIED_AT>
 - Final diff SHA: <FINAL_DIFF_SHA>
+
+For `done`, `Verify transcript SHA` is the SHA-256 of the first 32768 bytes of
+the verify transcript. The coordinator must run `verify.sh --run-verify`; the
+rerun prints and checks that bounded hash when the field is populated.
 
 ## Files changed
 

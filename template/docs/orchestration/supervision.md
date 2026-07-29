@@ -34,3 +34,26 @@ Read when: spawning, supervising, or recovering workers on any substrate. States
 ## Substrate fallback
 
 The prompt-file → report-file contract is substrate-independent. If Orca is unstable or unavailable, run the same prompt file via a Claude Code subagent or a plain terminal — the protocol (issue → prompt → report → verify → commit) does not change; only the spawn mechanism does.
+
+## Runtime contract
+
+The runtime owns one durable subscription for all outstanding workers. The
+coordinator ends its turn after dispatch and is reactivated only by
+`worker_done`, `escalation`, `decision_gate`, `terminal_exit`, or explicit user
+cancellation. A runtime wake carries the worker outcome, so a failure stays
+`failed` and a blocked worker stays `blocked`; neither can be inferred as
+`completed` from the existence of a message.
+
+`.orchestration/supervise.sh runtime` is the provider-neutral state-machine
+adapter used to test this contract. `peek` leaves an event unread, `claim`
+records the one coordinator resumption, and `ack` is legal only after the
+coordinator has applied the outcome. State is written with an fsync and atomic
+replace, so a restart cannot lose an event or create a second resumption.
+
+When the runtime cannot provide this wakeup, use the fallback adapter. It starts
+one `orca orchestration check --wait --peek --timeout-ms 900000` covering every
+outstanding worker. A harness response saying “still running” permits only a
+continuation of at least 300000 ms. It is not an Orca timeout and permits no
+status, terminal, liveness, or redispatch command. Only a completed Orca
+`count:0`/timeout result permits one liveness inspection. Every wait uses
+`--peek`; consume the event after acting on it.

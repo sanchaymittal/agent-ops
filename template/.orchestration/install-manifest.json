@@ -1,0 +1,6 @@
+{
+  "template_version": "3.0.0",
+  "schema_version": 1,
+  "managed_root": ".orchestration",
+  "rendered_configuration": "<CONFIG_SHA>"
+}

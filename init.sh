@@ -2,6 +2,20 @@
 # Stamp the agent-ops operating system into a target repo.
 set -euo pipefail
 
+SRC="$(cd "$(dirname "$0")/template" && pwd)"
+
+if [ "${1:-}" = --check ] || [ "${1:-}" = --upgrade ]; then
+  [ $# -eq 2 ] || { echo "usage: $0 --check|--upgrade TARGET_DIR" >&2; exit 2; }
+  case "$1" in
+    --check)
+      exec python3 "$SRC/.orchestration/installer.py" check --source "$SRC" --target "$2"
+      ;;
+    --upgrade)
+      exec python3 "$SRC/.orchestration/installer.py" upgrade --source "$SRC" --target "$2"
+      ;;
+  esac
+fi
+
 usage() {
   echo "usage: $0 TARGET_DIR PROJECT_NAME ISSUE_PREFIX [VERIFY_CMD]" >&2
   echo "example: $0 ~/github/example-app example-app EX 'npm run verify'" >&2
@@ -58,8 +72,6 @@ esac
 
 export T_NAME=$2 T_PREFIX T_PREFIX_LOWER T_VERIFY T_TRACKER_NAME T_TRACKER_DETAILS T_TRACKER_UPDATE \
   T_COORDINATOR T_PLANNER T_CODER T_REVIEWER
-SRC="$(cd "$(dirname "$0")/template" && pwd)"
-
 conflicts=()
 while IFS= read -r -d '' rel; do
   rel=${rel#./}
@@ -116,6 +128,13 @@ ln -s AGENTS.md "$STAGE/CLAUDE.md"
 if [ "$T_GRAPHIFY" = 1 ]; then
   printf '| Codebase map | [`graphify-out/wiki/index.md`](../graphify-out/wiki/index.md) | Generated codebase knowledge graph — regenerate before trusting; stale map is worse than grep |\n' >> "$STAGE/docs/index.md"
 fi
+
+python3 "$SRC/.orchestration/installer.py" stamp --source "$SRC" --stage "$STAGE" \
+  --project-name "$T_NAME" --tracker-name "$T_TRACKER_NAME" \
+  --tracker-details "$T_TRACKER_DETAILS" --tracker-update "$T_TRACKER_UPDATE" \
+  --issue-prefix "$T_PREFIX" --issue-prefix-lower "$T_PREFIX_LOWER" \
+  --verify-command "$T_VERIFY" --coordinator "$T_COORDINATOR" \
+  --planner "$T_PLANNER" --coder "$T_CODER" --reviewer "$T_REVIEWER"
 
 # Managed-file conflicts were checked above; merge the rendered payload only
 # after every staging operation has succeeded.

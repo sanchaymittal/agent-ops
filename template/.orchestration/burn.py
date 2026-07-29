@@ -114,6 +114,109 @@ DISPATCH_TOOLS = {"send_message", "spawn_agent", "followup_task",
 TASK_START_TOOLS = {"spawn_agent", "Agent"}
 EDIT_TOOLS = {"apply_patch", "Edit", "Write", "NotebookEdit"}
 
+DISPATCH_ID = re.compile(
+    r"(?:--(?:dispatch-id|dispatch|task|id)(?:=|\s+)([A-Za-z0-9_.:/-]+))",
+    re.I,
+)
+EVENT_DELIVERY = re.compile(
+    r"(?:worker_done|escalation|decision[_ -]?gate|terminal[_ -]?exit|user[_ -]?cancel|"
+    r"(?:^|[\s{,])count\s*[:=]\s*[1-9])",
+    re.I,
+)
+EMPTY_RESUMPTION = re.compile(r"(?:count\s*[:=]\s*0|no events?|empty inbox|nothing unread)", re.I)
+HARNESS_YIELD = re.compile(
+    r"(?:process|command|script)\s+(?:is\s+)?still\s+running|still running|"
+    r"script running",
+    re.I,
+)
+ORCA_TIMEOUT = re.compile(r"(?:orca.*timeout|timed out|\btimeout\b|count\s*[:=]\s*0)", re.I)
+
+
+def decoded_args(args):
+    """Decode a tool argument blob without making the scanner fragile."""
+    try:
+        value = json.loads(args)
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def command_text(name, args):
+    value = decoded_args(args)
+    for key in ("cmd", "command", "input", "script"):
+        candidate = value.get(key)
+        if isinstance(candidate, str):
+            return candidate
+    return args
+
+
+def dispatch_identity(name, args, ordinal):
+    """Return a stable dispatch identity, or a call-local fallback.
+
+    A task ID is the identity when the CLI exposes one.  A dispatch without an
+    ID is still counted once, but its call ordinal prevents a retry from being
+    mistaken for the same operation.  The denominator is resolved later after
+    tool results tell us which attempts actually succeeded.
+    """
+    if name in EDIT_TOOLS:
+        return None
+    value = decoded_args(args)
+    for key in ("dispatch_id", "dispatchId", "task_id", "taskId"):
+        if value.get(key):
+            return str(value[key])
+    match = DISPATCH_ID.search(command_text(name, args))
+    return match.group(1) if match else f"call-{ordinal}"
+
+
+def result_text(payload):
+    """Extract tool-result text from the several rollout result shapes."""
+    if not isinstance(payload, dict):
+        return ""
+    values = []
+    for key in ("output", "result", "content", "message", "error"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, (dict, list)):
+            values.append(json.dumps(value, sort_keys=True))
+    return " ".join(values)
+
+
+def result_success(payload, text):
+    """Resolve explicit failures; absence of a result remains legacy-success.
+
+    Older rollout exports contain calls and token counts but omit tool output.
+    Treating those calls as successful preserves historical measurement.  Newer
+    exports with an exit/status/error field are fail-closed.
+    """
+    if not isinstance(payload, dict):
+        return True
+    if payload.get("is_error") is True or payload.get("error"):
+        return False
+    if isinstance(payload.get("exit_code"), int):
+        return payload["exit_code"] == 0
+    status = str(payload.get("status", "")).lower()
+    if status in {"error", "failed", "failure", "timeout", "timed_out"}:
+        return False
+    if re.search(r"(?:^|\b)(?:exit(?:ed)?|status)\s*[:=]\s*[1-9]\d*\b", text, re.I):
+        return False
+    return not bool(re.search(r"\bdispatch\s+(?:failed|error)\b", text, re.I))
+
+
+def wake_kind(text):
+    """Classify a returned wait without confusing harness yields and Orca."""
+    if not text:
+        return ""
+    if HARNESS_YIELD.search(text):
+        return "harness_yield"
+    if EVENT_DELIVERY.search(text):
+        return "event_delivery"
+    if EMPTY_RESUMPTION.search(text):
+        return "empty_resumption"
+    if ORCA_TIMEOUT.search(text):
+        return "orca_timeout"
+    return ""
+
 # A supervision call declares its window in up to three places, and the
 # *smallest* one is what actually decides how often the coordinator wakes.
 #
@@ -245,8 +348,11 @@ def scan_claude(path, lines, since):
     polling is expensive: the wait returns, nothing has finished, and the
     entire context is re-sent to wait again."""
     buckets = collections.defaultdict(lambda: [0, 0])
-    started, tasks, round_trips = "", 0, 0
-    driver, pending_task, windows, seen = "<none>", 0, [], set()
+    started, round_trips = "", 0
+    driver, windows, seen = "<none>", [], set()
+    calls, results, wake_kinds = [], {}, collections.Counter()
+    call_commands = {}
+    call_ordinal = 0
     for line in lines:
         try:
             ev = json.loads(line)
@@ -282,24 +388,51 @@ def scan_claude(path, lines, since):
                 "input_tokens", "output_tokens",
                 "cache_read_input_tokens", "cache_creation_input_tokens"))
             round_trips += 1
-            tasks += pending_task
-            driver, pending_task = "<none>", 0
+            driver = "<none>"
         for block in message.get("content") or []:
             if not isinstance(block, dict) or block.get("type") != "tool_use":
                 continue
             name = block.get("name") or ""
             raw = json.dumps(block.get("input") or {})
             driver = classify(name, raw)
+            call_id = block.get("id") or f"call-{call_ordinal + 1}"
+            call_commands[call_id] = command_text(name, raw)
             buckets[driver][1] += 1
-            pending_task += starts_task(name, raw)
+            if starts_task(name, raw):
+                call_ordinal += 1
+                calls.append({"id": call_id,
+                              "dispatch_id": dispatch_identity(name, raw, call_ordinal),
+                              "success": None})
             if driver == "POLL":
                 window = wait_window(name, raw)
                 if window is not None:
                     windows.append(window)
+        # Claude's tool_result block is often on a later assistant line. Keep
+        # it available by the tool-use id when the export carries that id.
+        for block in message.get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                results[block.get("tool_use_id")] = block
     # A transcript no line could date cannot be placed in or out of --since, so
     # it is dropped rather than counted into a range it may not belong to.
-    return ((started, buckets, tasks, round_trips, claude_agent(path), windows)
-            if buckets and started else None)
+    for call in calls:
+        result = results.get(call["id"])
+        if result is not None:
+            text = result_text(result)
+            call["success"] = result_success(result, text)
+            kind = wake_kind(text)
+            if kind:
+                wake_kinds[kind] += 1
+    for call_id, payload in results.items():
+        if ("orca terminal read" in call_commands.get(call_id, "").lower()
+                and wake_kinds.get("orca_timeout", 0)):
+            wake_kinds["justified_recovery"] += 1
+    successful = {call["dispatch_id"] for call in calls
+                  if call["success"] is not False and call["dispatch_id"]}
+    failed = sum(call["success"] is False for call in calls)
+    dispatch_stats = {"attempts": len(calls), "successful": len(successful),
+                      "failed": failed, "ids": sorted(successful)}
+    return ((started, buckets, len(successful), round_trips, claude_agent(path), windows,
+             dispatch_stats, dict(wake_kinds)) if buckets and started else None)
 
 
 def scan(path, since):
@@ -329,8 +462,10 @@ def scan(path, since):
     buckets = collections.defaultdict(lambda: [0, 0])  # bucket -> [tokens, calls]
     tasks = round_trips = 0
     driver = "<none>"
-    pending_task = 0
     windows = []
+    calls, results, wake_kinds = [], {}, collections.Counter()
+    call_commands = {}
+    call_ordinal = 0
     for line in lines:
         try:
             ev = json.loads(line)
@@ -347,25 +482,64 @@ def scan(path, since):
             # instead would score a batch of eight waits as one supervision
             # call while the budget counts dispatches one by one.
             buckets[driver][1] += 1
-            pending_task += starts_task(name, raw)
+            call_id = payload.get("call_id") or payload.get("id") or f"call-{call_ordinal + 1}"
+            call_commands[call_id] = command_text(name, raw)
+            if starts_task(name, raw):
+                call_ordinal += 1
+                calls.append({"id": call_id,
+                              "dispatch_id": dispatch_identity(name, raw, call_ordinal),
+                              "success": None})
             # Only a supervision call declares a supervision window. The same
             # flag on a dispatch bounds how long that dispatch may take.
             if driver == "POLL":
                 window = wait_window(name, raw)
                 if window is not None:
                     windows.append(window)
+        elif ev.get("type") == "response_item" and kind in (
+                "function_call_output", "custom_tool_call_output", "tool_result"):
+            call_id = payload.get("call_id") or payload.get("tool_call_id")
+            text = result_text(payload)
+            if call_id:
+                results[call_id] = (payload, text)
+        elif ev.get("type") == "event_msg" and kind not in ("token_count", ""):
+            # Harness/Orca output exports vary by runtime.  Only inspect event
+            # messages that are explicitly output-like; token counts are not
+            # wake evidence.
+            text = result_text(payload)
+            wake = wake_kind(text)
+            if wake:
+                wake_kinds[wake] += 1
         elif ev.get("type") == "event_msg" and kind == "token_count":
             usage = (payload.get("info") or {}).get("last_token_usage") or {}
             # Tokens belong to the round-trip, so they land on whichever call
             # drove it; a round-trip with no preceding call lands in <none>.
             buckets[driver][0] += usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
             round_trips += 1
-            tasks += pending_task
-            driver, pending_task = "<none>", 0
-    return (started, buckets, tasks, round_trips, agent, windows) if buckets else None
+            driver = "<none>"
+    for call in calls:
+        result = results.get(call["id"])
+        if result is not None:
+            payload, text = result
+            call["success"] = result_success(payload, text)
+            wake = wake_kind(text)
+            if wake:
+                wake_kinds[wake] += 1
+    for call_id, (payload, text) in results.items():
+        if ("orca terminal read" in call_commands.get(call_id, "").lower()
+                and wake_kinds.get("orca_timeout", 0)):
+            wake_kinds["justified_recovery"] += 1
+    successful = {call["dispatch_id"] for call in calls
+                  if call["success"] is not False and call["dispatch_id"]}
+    failed = sum(call["success"] is False for call in calls)
+    tasks = len(successful)
+    dispatch_stats = {"attempts": len(calls), "successful": tasks,
+                      "failed": failed, "ids": sorted(successful)}
+    return (started, buckets, tasks, round_trips, agent, windows, dispatch_stats,
+            dict(wake_kinds)) if buckets else None
 
 
-def report(buckets, tasks, round_trips, label, windows, min_wait_ms, indent=""):
+def report(buckets, tasks, round_trips, label, windows, min_wait_ms, indent="",
+           dispatch_stats=None, wake_kinds=None):
     """Print the breakdown. `tasks=None` omits the ratio, for a view that spans
     sessions of different roles: pooling one session's polls against another's
     dispatches produces a number that means nothing next to the enforced one."""
@@ -388,6 +562,9 @@ def report(buckets, tasks, round_trips, label, windows, min_wait_ms, indent=""):
         # No dispatches but still polling is unbounded waste, not a clean ratio.
         per_task = polls / tasks if tasks else (float("inf") if polls else 0.0)
         print(f"{head}, {polls} polls / {tasks} tasks = {ratio_text(per_task)} per task")
+        if tasks:
+            print(f"{indent}  {polls} polls / {tasks} successful dispatches = "
+                  f"{ratio_text(per_task)} polls per dispatch")
     for name in ("POLL", "WORK", "DISPATCH", "EDIT", "<none>"):
         tok, cnt = buckets[name]
         if tok:
@@ -395,7 +572,16 @@ def report(buckets, tasks, round_trips, label, windows, min_wait_ms, indent=""):
     short = [w for w in windows if w < min_wait_ms]
     if short:
         print(f"{indent}  {len(short)} of {len(windows)} declared wait windows under "
-              f"{min_wait_ms // 60000}m, shortest {min(short) / 1000:.0f}s")
+                f"{min_wait_ms // 60000}m, shortest {min(short) / 1000:.0f}s")
+    if dispatch_stats:
+        print(f"{indent}  dispatch attempts {dispatch_stats['attempts']}, successful "
+              f"{dispatch_stats['successful']}, failed {dispatch_stats['failed']}")
+    if wake_kinds is not None:
+        print(f"{indent}  wakes: event delivery {wake_kinds.get('event_delivery', 0)}, "
+              f"empty resumption {wake_kinds.get('empty_resumption', 0)}, "
+              f"harness wake {wake_kinds.get('harness_yield', 0)}, "
+              f"Orca timeout {wake_kinds.get('orca_timeout', 0)}, "
+              f"justified recovery {wake_kinds.get('justified_recovery', 0)}")
     return per_task
 
 
@@ -442,6 +628,9 @@ def main():
     # on its own commands and dispatches nothing; judging it would flag normal
     # work as unbounded supervision.
     coordinator_polls = coordinator_tasks = 0
+    successful_dispatch_ids = set()
+    coordinator_tokens = worker_tokens = polling_tokens = 0
+    combined_wakes = collections.Counter()
     worst = (0.0, "")
     all_windows = []
     # The window rule is about a single call, not a rate, so unlike the ratio it
@@ -450,32 +639,49 @@ def main():
     # windows rather than the single shortest one: pairing a global count with
     # the owner of one outlier reads as if that session owned them all.
     worst_windows = (0, "")
-    for path, (started, buckets, session_tasks, session_trips, agent, windows) in sorted(found, key=lambda x: x[1][0]):
+    for path, (started, buckets, session_tasks, session_trips, agent, windows,
+               dispatch_stats, wake_kinds) in sorted(found, key=lambda x: x[1][0]):
         for name, (tok, cnt) in buckets.items():
             combined[name][0] += tok
             combined[name][1] += cnt
         tasks += session_tasks
         round_trips += session_trips
         all_windows += windows
+        combined_wakes.update(wake_kinds)
+        session_total = sum(tok for tok, _ in buckets.values())
+        polling_tokens += buckets["POLL"][0]
+        if dispatch_stats["attempts"]:
+            coordinator_tokens += session_total
+        else:
+            worker_tokens += session_total
         label = f"{started} {os.path.basename(path)[:40]}"
         if agent:
             label += f" (subagent {agent})"
         if args.sessions:
             report(buckets, session_tasks, session_trips, label, windows, args.min_wait_ms,
-                   indent="  ")
+                   indent="  ", dispatch_stats=dispatch_stats, wake_kinds=wake_kinds)
         short = [w for w in windows if w < args.min_wait_ms]
         if len(short) > worst_windows[0]:
             worst_windows = (len(short), label)
-        if not session_tasks:
+        if not dispatch_stats["attempts"]:
             continue
         polls = buckets["POLL"][1]
         coordinator_polls += polls
-        coordinator_tasks += session_tasks
-        if polls / session_tasks > worst[0]:
+        successful_dispatch_ids.update(dispatch_stats["ids"])
+        if session_tasks and polls / session_tasks > worst[0]:
             worst = (polls / session_tasks, label)
+    coordinator_tasks = len(successful_dispatch_ids)
     print()
     report(combined, None, round_trips, f"all sessions since {since}", all_windows,
-           args.min_wait_ms)
+           args.min_wait_ms, dispatch_stats={
+               "attempts": sum(x[1][6]["attempts"] for x in found),
+               "successful": coordinator_tasks,
+               "failed": sum(x[1][6]["failed"] for x in found),
+               "ids": sorted(successful_dispatch_ids),
+           }, wake_kinds=dict(combined_wakes))
+    print(f"coordinator tokens: {coordinator_tokens/1e6:.1f}M")
+    print(f"worker tokens: {worker_tokens/1e6:.1f}M")
+    print(f"polling tokens: {polling_tokens/1e6:.1f}M")
 
     # Both rules are reported before either exits, so one breach never hides
     # the other.
@@ -496,6 +702,8 @@ def main():
     pooled = coordinator_polls / coordinator_tasks
     summary = (f"coordinator sessions: {coordinator_polls} polls / {coordinator_tasks} tasks "
                f"= {pooled:.1f} per task")
+    print(f"{coordinator_polls} polls / {coordinator_tasks} successful dispatches = "
+          f"{pooled:.1f} polls per dispatch")
     print(f"{summary}; worst {worst[0]:.1f} — {worst[1]}" if worst[1] else summary)
     breach = max(pooled, worst[0])
     if breach > args.max_polls_per_task:

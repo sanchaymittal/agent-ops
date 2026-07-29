@@ -13,11 +13,11 @@ repo_root() {
 }
 
 diff_sha() {
-  local root path content_sha
+  local root path content_sha base=${1:-HEAD}
   root=$(cd "$(repo_root)" && pwd -P)
 
   {
-    git -C "$root" diff --binary --no-ext-diff HEAD -- . \
+    git -C "$root" diff --binary --no-ext-diff "$base" -- . \
       ':(exclude).orchestration/prompts/**' \
       ':(exclude).orchestration/reports/**'
     git -C "$root" ls-files --others --exclude-standard | LC_ALL=C sort | while IFS= read -r path; do
@@ -190,22 +190,32 @@ require_local_verify_command() {
 # Re-runs the recorded verify command at the repository root, captures a
 # byte-bounded transcript, and fails on any non-zero exit.
 run_verify_command() {
-  local root=$1 command=$2 log status
+  local root=$1 command=$2 label=${3:-verify} log status transcript_sha
   require_local_verify_command "$command"
   log=$(mktemp "${TMPDIR:-/tmp}/agent-ops-verify-log.XXXXXX")
   status=0
   ( cd "$root" && "${VERIFY_ARGV[@]}" ) >"$log" 2>&1 || status=$?
-  printf '%s\n' "--- verify command output (first 32768 bytes) ---" >&2
+  printf '%s\n' "--- %s command output (first 32768 bytes) ---" "$label" >&2
   head -c 32768 "$log" >&2
+  transcript_sha=$(head -c 32768 "$log" | shasum -a 256 | awk '{print $1}')
   printf '\n%s\n' "--- exit $status ---" >&2
+  printf '%s transcript sha256: %s\n' "$label" "$transcript_sha" >&2
   rm -f "$log"
-  [ "$status" -eq 0 ] || die "verify command failed with exit $status: $command"
+  if [ "$label" = verify ]; then
+    RUN_VERIFY_EXIT=$status
+    RUN_VERIFY_TRANSCRIPT_SHA=$transcript_sha
+  else
+    RUN_ACCEPTANCE_EXIT=$status
+    RUN_ACCEPTANCE_TRANSCRIPT_SHA=$transcript_sha
+  fi
+  [ "$status" -eq 0 ] || die "$label command failed with exit $status: $command"
 }
 
 verify_report() {
   local report=$1 run_verify=${2:-0} root relative basename prompt outcome
   local task_id prompt_task attempt prompt_attempt role prompt_role base_sha prompt_base
   local verify_command prompt_verify verify_exit expected_sha actual_sha verified_at
+  local prompt_sha report_prompt_sha transcript_sha expected_transcript_sha
   local acceptance prompt_acceptance
   local risk_tier prompt_risk_tier
   local allowed_paths prompt_allowed_paths
@@ -224,7 +234,7 @@ verify_report() {
 
   outcome=$(awk 'NF { print; exit }' "$report")
   case $outcome in
-    done|blocked:\ missing\ *|blocked:\ decision:\ *) ;;
+    done|failed|blocked:\ missing\ *|blocked:\ decision:\ *) ;;
     *) die "first non-empty line must be done or a supported blocked outcome" ;;
   esac
 
@@ -241,7 +251,17 @@ verify_report() {
   prompt_base=$(require_field "$prompt" "Base SHA")
   [ "$base_sha" = "$prompt_base" ] || die "Base SHA does not match prompt"
   git -C "$root" cat-file -e "$base_sha^{commit}" 2>/dev/null || die "Base SHA is not a commit"
-  [ "$(git -C "$root" rev-parse HEAD)" = "$base_sha" ] || die "worktree HEAD has moved from the prompt Base SHA"
+  # Base SHA records the worker worktree's origin. The coordinator may advance
+  # its own branch before it verifies a report; requiring HEAD to remain frozen
+  # made valid reports impossible to adopt after a neighbouring task landed.
+  report_prompt_sha=$(field "$report" "Canonical prompt SHA")
+  # The hash line is a label, not part of the canonical prompt bytes. Excluding
+  # it avoids the impossible self-referential hash while preserving the exact
+  # rest of the immutable prompt.
+  prompt_sha=$(grep -v '^- Canonical prompt SHA: ' "$prompt" | shasum -a 256 | awk '{print $1}')
+  if [ -n "$report_prompt_sha" ] && [[ "$report_prompt_sha" != '<PROMPT_SHA>' ]]; then
+    [ "$report_prompt_sha" = "$prompt_sha" ] || die "Canonical prompt SHA does not match prompt"
+  fi
   risk_tier=$(require_field "$report" "Risk tier")
   prompt_risk_tier=$(require_field "$prompt" "Risk tier")
   [ "$risk_tier" = "$prompt_risk_tier" ] || die "Risk tier does not match prompt"
@@ -272,12 +292,29 @@ verify_report() {
     verified_at=$(require_field "$report" "Verified at")
     [ -n "$verified_at" ] || die "Verified at is blank"
     expected_sha=$(require_field "$report" "Final diff SHA")
-    actual_sha=$(diff_sha)
+    actual_sha=$(diff_sha "$base_sha")
     [ "$expected_sha" = "$actual_sha" ] || die "Final diff SHA does not match the current worktree"
+    expected_transcript_sha=$(field "$report" "Verify transcript SHA")
+    if [ -n "$expected_transcript_sha" ] && [[ "$expected_transcript_sha" != '<VERIFY_TRANSCRIPT_SHA>' ]]; then
+      [ "$expected_transcript_sha" = "$(printf '%s' "${RUN_VERIFY_TRANSCRIPT_SHA:-$expected_transcript_sha}")" ] ||
+        [ "$run_verify" = 1 ] || die "Verify transcript SHA is not available for comparison"
+    fi
     # Re-run last: the recorded state is already proven to be the final state.
     if [ "$run_verify" = 1 ]; then
       run_verify_command "$root" "$verify_command"
+      case $acceptance in
+        'run: '*) run_verify_command "$root" "${acceptance#run: }" "acceptance" ;;
+      esac
+      if [ -n "$expected_transcript_sha" ] && [[ "$expected_transcript_sha" != '<VERIFY_TRANSCRIPT_SHA>' ]]; then
+        [ "$expected_transcript_sha" = "$RUN_VERIFY_TRANSCRIPT_SHA" ] ||
+          die "Verify transcript SHA does not match the bounded rerun transcript"
+      fi
     fi
+  elif [ "$outcome" = failed ]; then
+    # Failed is an explicit terminal outcome, never a successful completion.
+    # Keep the evidence identity checks above, but do not accept completion-only
+    # fields as proof that a failed worker finished the task.
+    [ "$(field "$report" "Failure reason")" != "" ] || die "failed report is missing 'Failure reason'"
   fi
 
   printf 'valid report: %s\n' "${report#"$root"/}"
