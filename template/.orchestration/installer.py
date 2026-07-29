@@ -28,7 +28,7 @@ def files(root: pathlib.Path):
         if not path.is_file() or any(part in EXCLUDE for part in path.parts):
             continue
         rel = path.relative_to(root).as_posix()
-        if rel in {MANIFEST, ".orchestration/.lease/meta"}:
+        if rel in {MANIFEST, ".orchestration/.lease/meta", "CLAUDE.md"}:
             continue
         yield rel, path
 
