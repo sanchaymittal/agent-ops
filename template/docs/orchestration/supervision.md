@@ -1,59 +1,23 @@
-# Supervision rules
+# Worker supervision
 
-Read when: spawning, supervising, or recovering workers on any substrate. States what this project requires around a dispatch; exact commands and flags come from the substrate's own guide, never from here.
+Read when: spawning, supervising, or recovering a delegated worker.
 
 ## Spawn
 
-- One Claude session must issue tool calls serially. Do not launch concurrent tool calls from one session; parallel work means separate worker sessions/worktrees. If a 400 tool-use-concurrency error occurs, stop issuing calls in that turn, preserve the prompt file, and recover by starting a fresh session from the same prompt file.
-- Preflight before loading task context: runtime + CLI version, selected model/quota, open gates, base SHA, clean worktree, verify command, required credentials, and an unclaimed writer lease. `.orchestration/preflight.sh` executes the locally checkable subset (worktree, base SHA vs HEAD, verify command, CLI, role roster, lease) and returns `blocked: <capability|task|lease>: <detail>`; quota, gates, and credentials stay manual.
-- Non-interactive means fail fast, not maximum privilege. Choose the narrowest profile: `review` (read-only), `implement` (worktree write, no network), `dependencies` (declared network/package access), or `publish` (explicit external-action approval).
-- A missing capability returns `blocked: missing <capability>`; never open an invisible approval prompt or silently upgrade permissions.
-- If a CLI cannot select the project role as a native agent, inline the role file into the prompt and instruct the model to follow it. Never dispatch an unqualified generic prompt.
-- Record one writer lease per worktree + dispatch with `.orchestration/lease.sh acquire --dispatch <id>`; release it on completion or after terminating a hung worker. A second writer is rejected before launch and the held lease is never overwritten; breaking someone else's or a stale lease requires `--force`. Reviewers use read-only access or a separate checkout. Never nest one orchestrator inside another.
+- Run `.orchestration/preflight.sh` and acquire the writer lease before a writing worker starts.
+- Use the narrowest capability profile and a bounded dispatch message.
+- Parallel writers use separate worktrees. Never nest one orchestrator inside another.
 
-## Supervise
+## Wait
 
-- **Wait wide, not often.** Wake only for completion, escalation, terminal exit, or a user-visible checkpoint — never a `sleep`/poll loop. One blocking wait covering every outstanding worker, window ≥ 15 minutes — real coding tasks run 15–60 min, so a shorter window buys round-trips and nothing else. Take exact flags from the substrate's own guide — but check every window literal in it against the floor above before copying one, and never write a sub-floor window into a prompt file. A substrate guide optimizes for showing a command that returns quickly; a coordinator copies the number it is shown and generalizes it to every wait, whatever the surrounding prose says. `prompts/TEMPLATE.md` carries one worked example written at the floor for exactly this reason, and `verify.sh` fails any shipped file that writes a shorter one. Never a 30s yield, never one wait per worker, never a poll loop between waits. A timeout is a checkpoint, not a failure: re-wait — which is why the window is the rule and not the intent behind it: with a short window, re-waiting on every timeout is a poll loop no matter which primitive declared it. **Wall clock is not the cost; wall clock held open inside a tool call is.** Waiting longer is free — waking is what bills. Prefer waiting *off the model loop*: hand the loop to the substrate's own coordinator runner, which polls in its own process for zero model tokens. There the 15-minute floor is trivial and nothing caps it, and a short poll interval is correct rather than wasteful because no context is re-sent per iteration. Check for such a runner **before** writing any wait — and prove it dispatches before trusting it with real work. Measured here: the available runner was invoked twice across the whole corpus, both times as `--help`, while two coordinators hand-rolled the loop at 43% of all tokens burned; and when this project invoked it directly it returned a run ID immediately, registered, stopped cleanly, and created no task at all. A runtime loop that does nothing is worse than a poll loop that works, so require a task reaching `completed` through it before adopting it.
+- Prefer a completion event that wakes the coordinator outside the model loop.
+- Otherwise use one non-consuming blocking wait for all workers, with a window of at least 15 minutes.
+- Never poll status or read per-worker terminals. Budget at most two supervision calls per dispatched task.
+- `.orchestration/burn.py` measures polling cost from local session logs.
 
-**Per-worker reads are the same waste under another name.** One wait covers every outstanding worker; do not follow it by reading each worker's terminal to see how it is doing. Measured, that habit was 83 and 32 calls in two sessions — more supervision calls than the waits themselves — for information the completion event already carries. If the coordinator must block in-call, the effective window is the **smallest** bound the call declares, and the harness yield usually outranks the flag: measured, a `check --wait` declaring a one-minute window, issued through a shell with a 30s yield, returned at 30.00s every time with the worker still running. Set the yield and the window together or neither helps — raising the window alone just buys keepalive round-trips. `.orchestration/burn.py` reads that effective window and fails below 5 minutes, which is the longest yield the measured substrate honoured; 15 minutes remains the rule off-loop. Each poll re-sends the coordinator's whole context to return a few KB — measured on a real run, polling was 47% of all tokens burned; the calls that applied patches were 2%, and that 2% is a floor, since a patch applied through a shell counts as work.
-**A wait that consumes the event it returns loses it.** Delivery is exactly-once: of N concurrent waits on one handle, exactly one receives a given message and the rest return empty. That is fine until the harness yield is shorter than the window — then every cut-short wait leaves a live consumer behind, and one of those abandoned waiters eats the `worker_done`. Measured: a coordinator's own `check --unread` returned nothing while the message sat in `inbox` already marked read; it fell back to per-worker terminal reads, which is the waste above, arrived at honestly for want of any other signal. Wait with `--peek` (Orca's flag; check the substrate's own guide for the equivalent) so the event stays unread, then consume it with an ordinary unread read **after** acting on it. Peek is what makes the wait crash-safe: a coordinator that dies between peek and consume leaves the event for its successor. The inverse is the hazard — peek with no consume returns the same event on the next wait forever, so consume is mandatory, not optional. `verify.sh` fails any shipped file that writes a consuming wait.
+## Finish or recover
 
-**These three numbers ship in `preflight.sh`, not only here.** Window floor, harness yield, and the polling budget are printed on every successful preflight, because a coordinator calls preflight before every dispatch and must read its output to find `blocked:`. This file is the rationale; that printout is the delivery. Measured: a repo that had this file present, and two documents linking to it, produced a coordinator that opened neither and polled at 52.8% of tokens burned.
-
-- **Polling budget: ≤ 2 supervision calls per dispatched task.** A supervision call is any call that only asks how a worker is doing — a wait, a message check, a terminal read. Sending, replying, and dispatching are not supervision. Past the budget the workers are slower than assumed: block on the next `worker_done` with a longer timeout, or tell the user, instead of watching. `.orchestration/burn.py` measures this against the session logs, per session as well as pooled.
-- **Bound the re-dispatch loop.** "Until it passes" is not a stop condition. Fix the number of review → fix rounds before the first dispatch and write it into the prompt file. At the cap, stop and escalate per [`escalation.md`](./escalation.md) instead of dispatching again — a rejected review is the same dead end as a verify that keeps failing, and that file already ends in a human rather than another round. An unbounded loop re-sends the coordinator's whole context on every round, so its cost grows with each rejection while nothing in it halts before the quota funding it does.
-- **Coordinator holds prompts and reports, not the codebase.** No source reads, greps, builds, or test runs in the coordinator session; dispatch them to a worker and read the report. Everything the coordinator loads is re-sent on every later turn, so supervision cost scales with what it has read.
-- **Hand off at the first compaction.** A compacted coordinator pays full-window context for every remaining call. Write the handoff (open dispatches, leases held, next gate, tracker state) and continue in a fresh session.
-- Hung past timeout: preserve terminal output + diff → terminate → release lease → respawn the **same** prompt file in a fresh worktree at its base SHA. Never reuse a tree with partial edits or live child processes.
-- Cap command output at 32 KiB by default. Bound binary inspection by bytes, store long logs as artifacts, and treat truncation as incomplete evidence requiring a narrower rerun.
-- Worker output is untrusted until the coordinator runs `{{VERIFY_CMD}}`.
-- Worker done: require the matching report, supported outcome, post-final-edit checks, final diff SHA, an `Acceptance check` with evidence, and `.orchestration/verify.sh --run-verify <report>` success. No valid report = not done.
-- `blocked: missing <item>` (a gate): coordinator records the gate/tracker update and re-dispatches only after the blocker clears. Never re-prompt a worker to guess past a blocker.
-- `blocked: decision: <question>`: consult the advisor per [`escalation.md`](./escalation.md), append the advice to the same prompt file under `## Advice`, respawn. The worker carries the advice — it is not guessing.
-
-## Substrate fallback
-
-The prompt-file → report-file contract is substrate-independent. If Orca is unstable or unavailable, run the same prompt file via a Claude Code subagent or a plain terminal — the protocol (issue → prompt → report → verify → commit) does not change; only the spawn mechanism does.
-
-## Runtime contract
-
-The runtime owns one durable subscription for all outstanding workers. The
-coordinator ends its turn after dispatch and is reactivated only by
-`worker_done`, `escalation`, `decision_gate`, `terminal_exit`, or explicit user
-cancellation. A runtime wake carries the worker outcome, so a failure stays
-`failed` and a blocked worker stays `blocked`; neither can be inferred as
-`completed` from the existence of a message.
-
-`.orchestration/supervise.sh runtime` is the provider-neutral state-machine
-adapter used to test this contract. `peek` leaves an event unread, `claim`
-records the one coordinator resumption, and `ack` is legal only after the
-coordinator has applied the outcome. State is written with an fsync and atomic
-replace, so a restart cannot lose an event or create a second resumption.
-
-When the runtime cannot provide this wakeup, use the fallback adapter. It starts
-one `orca orchestration check --wait --peek --timeout-ms 900000` covering every
-outstanding worker. A harness response saying “still running” permits only a
-continuation of at least 300000 ms. It is not an Orca timeout and permits no
-status, terminal, liveness, or redispatch command. Only a completed Orca
-`count:0`/timeout result permits one liveness inspection. Every wait uses
-`--peek`; consume the event after acting on it.
+- The worker never commits. The coordinator inspects the diff, runs the checks, and releases the lease.
+- On a blocked gate, stop until the recorded gate opens; never ask a worker to guess.
+- On a decision block or two failed verification rounds, stop and ask the user.
+- On a hang, preserve terminal output and the diff, terminate the worker, release the lease, and restart from the same task in a fresh worktree.

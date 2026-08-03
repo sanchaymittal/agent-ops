@@ -38,16 +38,7 @@ def rendered(source: pathlib.Path, config: dict[str, str]) -> bytes:
     text = data.decode("utf-8")
     replacements = {
         "PROJECT_NAME": config["project_name"],
-        "TASK_TRACKER_NAME": config["tracker_name"],
-        "TASK_TRACKER_DETAILS": config["tracker_details"],
-        "TASK_TRACKER_UPDATE": config["tracker_update"],
-        "ISSUE_PREFIX": config["issue_prefix"],
-        "ISSUE_PREFIX_LOWER": config["issue_prefix_lower"],
         "VERIFY_CMD": config["verify_command"],
-        "COORDINATOR": config["coordinator"],
-        "PLANNER": config["planner"],
-        "CODER": config["coder"],
-        "REVIEWER": config["reviewer"],
     }
     for key, value in replacements.items():
         text = text.replace("{{" + key + "}}", value)
@@ -62,16 +53,7 @@ def stamp(args: argparse.Namespace) -> int:
     source, stage = pathlib.Path(args.source), pathlib.Path(args.stage)
     configuration = {
         "project_name": args.project_name,
-        "tracker_name": args.tracker_name,
-        "tracker_details": args.tracker_details,
-        "tracker_update": args.tracker_update,
-        "issue_prefix": args.issue_prefix,
-        "issue_prefix_lower": args.issue_prefix_lower,
         "verify_command": args.verify_command,
-        "coordinator": args.coordinator,
-        "planner": args.planner,
-        "coder": args.coder,
-        "reviewer": args.reviewer,
     }
     installed = {rel: digest(path.read_bytes()) for rel, path in files(stage)}
     manifest = {
@@ -162,9 +144,7 @@ def parser():
     stamp_ap = sub.add_parser("stamp")
     stamp_ap.add_argument("--source", required=True)
     stamp_ap.add_argument("--stage", required=True)
-    for name in ("project_name", "tracker_name", "tracker_details", "tracker_update",
-                 "issue_prefix", "issue_prefix_lower", "verify_command", "coordinator",
-                 "planner", "coder", "reviewer"):
+    for name in ("project_name", "verify_command"):
         stamp_ap.add_argument("--" + name.replace("_", "-"), required=True)
     stamp_ap.set_defaults(fn=stamp)
     for name in ("check", "upgrade"):

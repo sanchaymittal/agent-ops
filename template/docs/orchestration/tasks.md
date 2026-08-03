@@ -1,10 +1,8 @@
-# Task tracker rules
+# Optional task tracking
 
-Read when: creating, dispatching, blocking, or closing work items.
+Read when: the project uses an issue tracker.
 
-- Backlog lives in {{TASK_TRACKER_DETAILS}}.
-- **No work without a tracked issue/task.** Create one before dispatching anything, including meta/process work.
-- Branch names: use the tracker-provided branch name when available; otherwise use `{{ISSUE_PREFIX_LOWER}}-xx-<slug>`.
-- Status flow: `Todo` → `In Progress` (preflight passed + lease acquired) → `In Review` (schema-complete report validates against the current diff SHA) → `Done` (coordinator verify + independent review + commit). Blocked work: comment on the issue/task linking the gate row in `docs/gates/index.md`; do not start it.
-- The coordinator updates {{TASK_TRACKER_NAME}} — workers do not need tracker access. On completion, post the prompt + report paths as an issue/task comment when the tracker supports comments.
-- Commits reference the issue/task: `<role>: <summary> ({{ISSUE_PREFIX}}-xx)`.
+- Local and read-only work never requires a tracker item. Missing or expired tracker access is not a blocker.
+- Use the configured tracker only when the user requests it or the work already has an issue.
+- When tracked, use the tracker-provided branch name and status flow, link blocked work to the relevant gate, and reference the issue in the commit.
+- The coordinator performs requested tracker updates; workers do not need tracker access.

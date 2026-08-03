@@ -1,73 +1,48 @@
-# {{PROJECT_NAME}} — Agent Operating Contract
+# {{PROJECT_NAME}} — Agent Guide
 
-Every agent CLI working in this repo (Claude Code, Codex, agy/Antigravity, OpenCode, Hermes, or any other that reads `AGENTS.md`) follows this file. `CLAUDE.md` symlinks here so every CLI reads one contract. Humans start at `README.md` when present; otherwise start here until the project README exists.
+`CLAUDE.md` symlinks here so agent CLIs share one short contract.
 
 ## What this repo is
 
-TODO(project): 2–3 lines — what this product is. When scope exists, freeze it in `docs/product/positioning.md` and state here: scope additions require editing that doc first.
+TODO(project): 2–3 lines — what this product is. When scope exists, freeze it in `docs/product/positioning.md` and state here.
 
-## Read protocol (CAG — keep context small)
+## Read protocol
 
-1. Always load: this file → `docs/index.md` → `docs/gates/index.md`. Nothing else by default.
-2. Task touches a concern → read that concern's `index.md`; leaf docs only when the index says so.
-3. Never bulk-read `docs/`. Indexes stay ≤ 40 lines; leaf docs carry a one-line `Read when:` header.
+1. Always load this file, then `docs/index.md`.
+2. Read a concern index only when the task touches it; read leaf docs only when routed there.
+3. Read `docs/gates/index.md` before real-data, integration, infrastructure, deployment, credential, or owner-decision work.
+4. Never bulk-read `docs/`; indexes stay ≤ 40 lines.
 
 ## Non-negotiables
 
 - Never invent product requirements, integrations, credentials, identifiers, metrics, user data, or test results. Missing data → name exactly what is missing and stop.
-- Never assume human-provisioned infra. A gate opens only when its row in `docs/gates/index.md` records a real value.
-- Never commit secrets or private user data. `{{VERIFY_CMD}}` is the definition of done for any code change.
-- Smallest verifiable change, with tests or smoke checks. Report exact files changed and commands run.
+- Never assume human-provisioned infrastructure. A gate opens only when its row in `docs/gates/index.md` records a real value.
+- Never commit secrets or private user data. `{{VERIFY_CMD}}` is the definition of done for code changes.
+- Make the smallest verifiable change. Report exact files changed and commands run.
 
-## Working method (every slot, every model)
+## Working method
 
-The method is the contract — whichever CLI fills a slot, it works like this:
-
-- Understand first: read every file the change touches and trace the flow end to end before editing. No pattern-match patches.
-- Root cause over symptom: before changing shared code, check its callers; fix once, where all paths converge.
+- Read every file the change touches and trace callers before changing shared code.
+- Fix the root cause at the narrowest convergence point.
 - Prefer deletion and reuse over addition. No speculative abstraction, config, or scaffolding.
-- Verify by execution: run the check and read its output before claiming anything. A claim without a run is invention.
-- Evidence is bounded: cap command output at 32 KiB by default; truncated output is not evidence — rerun a narrower query or save an artifact and cite its path + hash.
-- One writer lease per worktree. Preflight the CLI/model/quota, gates, base SHA, verify command, permissions, clean tree, and lease before loading task context: `.orchestration/preflight.sh` checks the local half and `.orchestration/lease.sh acquire --dispatch <id>` takes the lease. A `blocked:` line means do not start.
-- Final-state proof: after the last edit, run the required checks, inspect diff/status, compute the diff SHA, and validate the report with `.orchestration/verify.sh`. A `done` report needs an `Acceptance check` (`run: <command>` or `artifact: <path>`) that matches its prompt, plus the evidence it produced.
-- Report outcome first: `done`, `blocked: missing <item>`, or `blocked: decision: <question>` in the first line, failures quoted verbatim, deviations from the prompt named.
-- Parallel only across separate worker sessions/worktrees; issue tool calls serially within each session. Serial when coupled — never two writers in one worktree.
+- Run the relevant check and read its result before making a claim.
+- After the last edit, run `{{VERIFY_CMD}}` for code changes plus `git diff --check`, then inspect diff/status.
+- Report the outcome, files changed, commands run, failures, and any deviation from the request.
+
+## Optional delegation
+
+- Direct work is the default. Delegate only when the user explicitly requests workers or parallel agent work; then read `docs/orchestration/index.md`.
+- Use built-in specialist roles when helpful. Repository-local copies of generic role personas are intentionally not maintained.
 
 ## Task management
 
-Backlog lives in {{TASK_TRACKER_DETAILS}}. **No work without a tracked issue/task.** Rules: `docs/orchestration/tasks.md`. Linear-specific rules are optional: `docs/orchestration/linear.md`.
-
-## Orchestration — coordinator/worker
-
-- The coordinator plans, dispatches, verifies, commits, and updates the configured tracker. Workers implement. **Workers never commit.**
-- Dispatch = tracked issue/task → prompt from `.orchestration/prompts/TEMPLATE.md` → worker → matching report → `.orchestration/verify.sh` → coordinator verify/review → commit. Checklist: `docs/orchestration/index.md`.
-- Model allocation is modular: docs name slots (COORDINATOR orchestrates, PLANNER advises + escalation consults, CODER implements, REVIEWER reviews); the slot→model table lives only in `docs/orchestration/models.md`. Swap a model there — nothing else changes.
-- Slots are bindings, not identities: any CLI can fill any slot; the protocol and role files do not change with the model.
-- Cross-model review: the model that authored a change never reviews it.
-- Typo-class changes (no behavior, no design choice) → coordinator fixes inline and commits; the dispatch ceremony is for real tasks.
-- Every commit and report names the exact role used: `<role>: <summary> ({{ISSUE_PREFIX}}-xx)`.
-
-## Roster (project-scoped roles)
-
-Same 9 roles in each CLI dir: `.claude/agents/` (Claude), `.codex/agents/` (Codex), `.agents/agents/` (agy), `.opencode/agents/` (OpenCode). Confirm a CLI actually resolves its roster — run its own agent-list command in the repo — before dispatching with `--agent <role>`. A CLI that resolves nothing (Hermes, and agy in some setups) loads the role file by path or inlined from the dispatch prompt.
-
-| Role | Use for |
-| --- | --- |
-| `engineering-minimal-change-engineer` | Default implementation — smallest correct diff |
-| `engineering-backend-architect` | Services, APIs, data-store design |
-| `engineering-frontend-developer` | UI work |
-| `engineering-ai-engineer` | LLM features, classification, retrieval pipelines |
-| `engineering-prompt-engineer` | Prompt design + evals |
-| `engineering-devops-automator` | CI, env management, deploy pipeline |
-| `engineering-code-reviewer` | Review of worker output |
-| `engineering-software-architect` | Architecture/planning reviews (pairs with the PLANNER slot) |
-| `engineering-technical-writer` | Docs — must respect the CAG budgets above |
+Use a tracker when the user requests it or the work already has an issue. Rules: `docs/orchestration/tasks.md`.
 
 ## Layout
 
-TODO(project): keep one line per path; keep the two rows below.
+TODO(project): keep one line per path.
 
 | Path | What |
 | --- | --- |
 | `docs/` | Concern-indexed documentation — start at `docs/index.md` |
-| `.orchestration/` | Dispatch prompts + worker reports (see its README) |
+| `.orchestration/` | Optional worker safeguards and diagnostics |

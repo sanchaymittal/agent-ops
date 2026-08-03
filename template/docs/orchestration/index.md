@@ -1,32 +1,26 @@
-# Orchestration — operating card
+# Optional worker delegation
 
-Read when: dispatching, supervising, or executing work as coordinator or worker.
+Read when: dispatching, supervising, or executing delegated work.
 
 ## Model
 
-- **Coordinator** (the interactive session): plans, dispatches, verifies, commits, updates the configured tracker. Does not implement worker tasks itself, and does not read the codebase to supervise — supervision is a blocking wait, not a poll loop, and its cost rules are in [`supervision.md`](./supervision.md#supervise).
-- **Workers**: project-scoped roles (roster in `AGENTS.md`), spawned non-interactive with the least-privilege capability profile, one writer lease per worktree. **Workers never commit.**
-- Dispatch independent issues in parallel only across separate worker sessions/worktrees; each session issues tool calls serially. Serialize anything touching the same files.
+- Direct work in the interactive session is the default. Use this flow only when the user explicitly requests delegation or parallel agent work.
+- The coordinator plans, dispatches, verifies, and commits; it updates a tracker only when one is in use.
+- Workers are spawned with the narrowest capability profile and never commit.
+- Independent tasks may run in parallel only in separate worker sessions/worktrees; serialize anything touching the same files.
 
-## Model allocation
+## Dispatch checklist
 
-Slot→model bindings live in one place: [`models.md`](./models.md). Docs (including this one) name slots — COORDINATOR, PLANNER, CODER, REVIEWER, MISC — never models. Verifying dispatches the COORDINATOR coordinated is fine; reviewing code it authored is not (cross-model review rule, in `models.md`).
-
-## Dispatch checklist (every task)
-
-1. Tracked issue/task exists (`{{ISSUE_PREFIX}}-xx`) and is unblocked per [`../gates/index.md`](../gates/index.md).
-2. Copy `.orchestration/prompts/TEMPLATE.md` to `.orchestration/prompts/{{ISSUE_PREFIX_LOWER}}-xx-<role>-<slug>.md`; fill every identity, scope, permission, acceptance, and verification field. Hard task → consult [escalation.md](./escalation.md).
-3. `.orchestration/preflight.sh --verify-cmd '{{VERIFY_CMD}}' --base-sha <sha> --cli <cli> --role <role>`, then `.orchestration/lease.sh acquire --dispatch {{ISSUE_PREFIX}}-xx`; spawn with the narrowest capability profile per [`supervision.md`](./supervision.md). Any `blocked:` line → fix the cause, do not spawn.
-4. Worker writes the matching report from `.orchestration/reports/TEMPLATE.md`, runs final checks after the last edit, records the diff SHA, then runs `.orchestration/verify.sh <report>`.
-5. Coordinator runs `.orchestration/verify.sh --run-verify <report>` (re-runs `{{VERIFY_CMD}}` itself) plus independent review against the same diff SHA (two verify failures → [escalation.md](./escalation.md)).
-6. Commit as `<role>: <summary> ({{ISSUE_PREFIX}}-xx)` only after all evidence is green, then {{TASK_TRACKER_UPDATE}} per [`tasks.md`](./tasks.md).
+1. Give the worker a bounded task, allowed paths, acceptance check, and permissions.
+2. For a writing worker, run `.orchestration/preflight.sh` and acquire `.orchestration/lease.sh`.
+3. Wait for completion without polling; rules are in [`supervision.md`](./supervision.md).
+4. Inspect the worker diff/status and run the acceptance check plus `{{VERIFY_CMD}}` for code changes.
+5. Add independent review only for high-risk work or when the user requests it; update a tracker only when one is in use.
 
 ## Detail
 
 | File | Covers |
 | --- | --- |
-| [`models.md`](./models.md) | Slot→model bindings — the only file to edit when swapping a model |
-| [`supervision.md`](./supervision.md) | Preflight, leases, supervision budget, hang recovery, substrate fallback |
-| [`tasks.md`](./tasks.md) | Generic tracker rules, status flow, branch naming, who updates what |
+| [`supervision.md`](./supervision.md) | Preflight, leases, supervision budget, and hang recovery |
+| [`tasks.md`](./tasks.md) | Optional tracker rules |
 | [`linear.md`](./linear.md) | Optional Linear-specific adapter rules |
-| [`escalation.md`](./escalation.md) | Advisor triggers, consult mechanic, budget |
